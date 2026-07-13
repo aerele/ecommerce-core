@@ -96,17 +96,28 @@ def _retry_job(job: str):
 	frappe.only_for("System Manager")
 
 	doc = frappe.get_doc("Ecommerce Integration Log", job)
-	# The stored method may belong to any installed integration app (unicommerce, shopify, ...)
-	# built on top of ecommerce_core. Only allow re-enqueuing methods from an installed app.
-	root_app = (doc.method or "").split(".")[0]
-	if root_app not in frappe.get_installed_apps() or doc.status != "Error":
+	if doc.status != "Error":
 		return
+
+	# Resolve callable method. Support logs created under the monolith app path after a
+	# switch to standalone unicommerce (same functions, new package names).
+	method = _resolve_retry_method(doc.method)
+	if not method:
+		return
+
+	root_app = method.split(".")[0]
+	if root_app not in frappe.get_installed_apps():
+		return
+
+	# Persist rewritten method so future retries use the installed app path.
+	if method != doc.method:
+		doc.db_set("method", method, update_modified=False)
 
 	doc.db_set("status", "Queued", update_modified=False)
 	doc.db_set("traceback", "", update_modified=False)
 
 	frappe.enqueue(
-		method=doc.method,
+		method=method,
 		queue="short",
 		timeout=300,
 		is_async=True,
@@ -114,6 +125,34 @@ def _retry_job(job: str):
 		request_id=doc.name,
 		enqueue_after_commit=True,
 	)
+
+
+def _resolve_retry_method(method: str | None) -> str | None:
+	"""Return a runnable dotted method path, or None if the log cannot be retried."""
+	if not method:
+		return None
+
+	# Monolith → standalone Unicommerce package rewrite (safe when unicommerce is installed).
+	if method.startswith("ecommerce_integrations.unicommerce."):
+		if "unicommerce" in frappe.get_installed_apps():
+			return method.replace(
+				"ecommerce_integrations.unicommerce.",
+				"unicommerce.unicommerce.",
+				1,
+			)
+		# Monolith still installed: keep original path.
+		return method
+
+	# Shared helpers moved into ecommerce_core.
+	if method.startswith("ecommerce_integrations.utils.") and "ecommerce_core" in frappe.get_installed_apps():
+		return method.replace("ecommerce_integrations.utils.", "ecommerce_core.utils.", 1)
+	if (
+		method.startswith("ecommerce_integrations.controllers.")
+		and "ecommerce_core" in frappe.get_installed_apps()
+	):
+		return method.replace("ecommerce_integrations.controllers.", "ecommerce_core.controllers.", 1)
+
+	return method
 
 
 @frappe.whitelist()
