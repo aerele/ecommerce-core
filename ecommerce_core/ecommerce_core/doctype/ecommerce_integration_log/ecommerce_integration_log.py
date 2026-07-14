@@ -95,25 +95,75 @@ def resync(method, name, request_data):
 def _retry_job(job: str):
 	frappe.only_for("System Manager")
 
-	doc = frappe.get_doc("Ecommerce Integration Log", job)
-	# The stored method may belong to any installed integration app (unicommerce, shopify, ...)
-	# built on top of ecommerce_core. Only allow re-enqueuing methods from an installed app.
-	root_app = (doc.method or "").split(".")[0]
-	if root_app not in frappe.get_installed_apps() or doc.status != "Error":
-		return
+	try:
+		doc = frappe.get_doc("Ecommerce Integration Log", job)
+		if doc.status != "Error":
+			return
 
-	doc.db_set("status", "Queued", update_modified=False)
-	doc.db_set("traceback", "", update_modified=False)
+		installed_apps = set(frappe.get_installed_apps())
 
-	frappe.enqueue(
-		method=doc.method,
-		queue="short",
-		timeout=300,
-		is_async=True,
-		payload=json.loads(doc.request_data),
-		request_id=doc.name,
-		enqueue_after_commit=True,
-	)
+		# Resolve callable method. Support logs created under the monolith app path after a
+		# switch to standalone unicommerce (same functions, new package names).
+		method = _resolve_retry_method(doc.method, installed_apps)
+		if not method:
+			return
+
+		root_app = method.split(".")[0]
+		if root_app not in installed_apps:
+			return
+
+		# Persist rewritten method so future retries use the installed app path.
+		if method != doc.method:
+			doc.db_set("method", method, update_modified=False)
+
+		doc.db_set("status", "Queued", update_modified=False)
+		doc.db_set("traceback", "", update_modified=False)
+
+		payload = json.loads(doc.request_data) if doc.request_data else {}
+
+		frappe.enqueue(
+			method=method,
+			queue="short",
+			timeout=300,
+			is_async=True,
+			payload=payload,
+			request_id=doc.name,
+			enqueue_after_commit=True,
+		)
+	except Exception:
+		frappe.log_error(
+			title=_("Ecommerce Integration Log retry failed"),
+			message=frappe.get_traceback(),
+		)
+		raise
+
+
+def _resolve_retry_method(method: str | None, installed_apps: set[str] | None = None) -> str | None:
+	"""Return a runnable dotted method path, or None if the log cannot be retried."""
+	if not method:
+		return None
+
+	if installed_apps is None:
+		installed_apps = set(frappe.get_installed_apps())
+
+	# Monolith -> standalone Unicommerce package rewrite (safe when unicommerce is installed).
+	if method.startswith("ecommerce_integrations.unicommerce."):
+		if "unicommerce" in installed_apps:
+			return method.replace(
+				"ecommerce_integrations.unicommerce.",
+				"unicommerce.unicommerce.",
+				1,
+			)
+		# Monolith still installed: keep original path.
+		return method
+
+	# Shared helpers moved into ecommerce_core.
+	if method.startswith("ecommerce_integrations.utils.") and "ecommerce_core" in installed_apps:
+		return method.replace("ecommerce_integrations.utils.", "ecommerce_core.utils.", 1)
+	if method.startswith("ecommerce_integrations.controllers.") and "ecommerce_core" in installed_apps:
+		return method.replace("ecommerce_integrations.controllers.", "ecommerce_core.controllers.", 1)
+
+	return method
 
 
 @frappe.whitelist()

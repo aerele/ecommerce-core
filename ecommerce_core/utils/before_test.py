@@ -31,8 +31,33 @@ def before_tests():
 		)
 
 	frappe.db.set_value("Stock Settings", None, "auto_insert_price_list_rate_if_missing", 0)
+	# Unicommerce orders can list the same SKU in multiple rows (one per unit/package).
+	frappe.db.set_value("Selling Settings", None, "allow_multiple_items", 1)
 	enable_all_roles_and_domains()
 	create_tax_account()
+	create_currency_exchange()
+
+
+def create_currency_exchange():
+	# erpnext ships its own USD "Wind Power LLC" test company, whose name collides with the
+	# INR company before_tests would otherwise create. When the USD one wins, integration
+	# orders priced in INR need an INR<->USD rate to post. Seed both directions idempotently.
+	for from_currency, to_currency, rate in (("INR", "USD", 0.012), ("USD", "INR", 83.0)):
+		if frappe.db.exists(
+			"Currency Exchange", {"from_currency": from_currency, "to_currency": to_currency}
+		):
+			continue
+		frappe.get_doc(
+			{
+				"doctype": "Currency Exchange",
+				"date": "2000-01-01",
+				"from_currency": from_currency,
+				"to_currency": to_currency,
+				"exchange_rate": rate,
+				"for_selling": 1,
+				"for_buying": 1,
+			}
+		).insert(ignore_permissions=True)
 
 
 def create_tax_account():

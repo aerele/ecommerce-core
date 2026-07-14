@@ -9,6 +9,19 @@ app_color = "grey"
 app_email = "developers@aerele.in"
 app_license = "GNU GPL v3.0"
 required_apps = ["frappe/erpnext"]
+app_logo_url = "/assets/ecommerce_core/images/ecommerce-core.svg"
+app_home = "/desk/ecommerce-core"
+
+# Shown on Desk home (same pattern as ERPNext / India Compliance)
+add_to_apps_screen = [
+	{
+		"name": app_name,
+		"logo": app_logo_url,
+		"title": app_title,
+		"route": app_home,
+		"has_permission": "ecommerce_core.check_app_permission",
+	}
+]
 
 # Includes in <head>
 # ------------------
