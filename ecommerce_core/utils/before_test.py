@@ -42,9 +42,12 @@ def create_currency_exchange():
 	# erpnext ships its own USD "Wind Power LLC" test company, whose name collides with the
 	# INR company before_tests would otherwise create. When the USD one wins, integration
 	# orders priced in INR need an INR<->USD rate to post. Seed both directions idempotently.
+	# Match on date too: erpnext's test bootstrap seeds today-dated rates, which must not
+	# stop this historical seed that back-dated fixture orders rely on.
 	for from_currency, to_currency, rate in (("INR", "USD", 0.012), ("USD", "INR", 83.0)):
 		if frappe.db.exists(
-			"Currency Exchange", {"from_currency": from_currency, "to_currency": to_currency}
+			"Currency Exchange",
+			{"date": "2000-01-01", "from_currency": from_currency, "to_currency": to_currency},
 		):
 			continue
 		frappe.get_doc(
