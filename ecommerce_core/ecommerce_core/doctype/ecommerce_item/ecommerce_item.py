@@ -142,19 +142,35 @@ def create_ecommerce_item(
 	if is_synced(integration, integration_item_code, variant_id, sku):
 		return
 
-	# crete default item
+	# create default item
 	item = {
 		"doctype": "Item",
 		"is_stock_item": 1,
 		"is_sales_item": 1,
-		"item_defaults": [{"company": get_default_company()}],
+		"stock_uom": "Nos",
 	}
 
 	item.update(item_dict)
 
-	new_item = frappe.get_doc(item)
-	new_item.flags.from_integration = True
-	new_item.insert(ignore_permissions=True, ignore_mandatory=True)
+	# Ensure Item Defaults include income/expense for the company so Sales Invoice
+	# does not fail with "Income Account None does not belong to company …"
+	if not item.get("item_defaults"):
+		item["item_defaults"] = [get_item_default_row(get_default_company())]
+	else:
+		item["item_defaults"] = [_ensure_income_on_item_default(row) for row in item["item_defaults"]]
+
+	existing_item_code = item.get("item_code")
+
+	if existing_item_code and frappe.db.exists("Item", existing_item_code):
+		# An Item with this item_code already exists — e.g. a prior sync created it
+		# under a different variant_id/sku combination (so is_synced() above didn't
+		# match), or this is a retried/duplicate webhook. Reuse the existing Item
+		# instead of a duplicate insert, which raises DuplicateEntryError.
+		new_item = frappe.get_doc("Item", existing_item_code)
+	else:
+		new_item = frappe.get_doc(item)
+		new_item.flags.from_integration = True
+		new_item.insert(ignore_permissions=True, ignore_mandatory=True)
 
 	ecommerce_item = frappe.get_doc(
 		{
@@ -171,3 +187,30 @@ def create_ecommerce_item(
 	)
 
 	ecommerce_item.insert()
+
+
+def get_item_default_row(company: str, warehouse: str | None = None) -> dict:
+	"""Build Item Default row with company income/expense accounts."""
+	if not company:
+		company = get_default_company()
+	row = {
+		"company": company,
+		"income_account": frappe.get_cached_value("Company", company, "default_income_account"),
+		"expense_account": frappe.get_cached_value("Company", company, "default_expense_account"),
+	}
+	if warehouse:
+		row["default_warehouse"] = warehouse
+	return row
+
+
+def _ensure_income_on_item_default(row: dict) -> dict:
+	"""Fill missing income/expense on an item_defaults row from Company."""
+	if not isinstance(row, dict):
+		return row
+	company = row.get("company") or get_default_company()
+	row["company"] = company
+	if not row.get("income_account"):
+		row["income_account"] = frappe.get_cached_value("Company", company, "default_income_account")
+	if not row.get("expense_account") and not row.get("default_cogs_account"):
+		row["expense_account"] = frappe.get_cached_value("Company", company, "default_expense_account")
+	return row
