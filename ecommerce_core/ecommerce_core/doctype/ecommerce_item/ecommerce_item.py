@@ -147,9 +147,10 @@ def create_ecommerce_item(
 		"doctype": "Item",
 		"is_stock_item": 1,
 		"is_sales_item": 1,
-		"item_defaults": [{"company": get_default_company()}],
 	}
-
+	default_company = get_default_company()
+	if default_company:
+		item["item_defaults"] = [{"company": default_company}]
 	item.update(item_dict)
 
 	new_item = frappe.get_doc(item)
