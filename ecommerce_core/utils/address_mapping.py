@@ -22,6 +22,7 @@ COUNTRY_CODE_TO_NAME = {
 	"AT": "Austria",
 	"AU": "Australia",
 	"AW": "Aruba",
+	"AX": "Åland Islands",
 	"AZ": "Azerbaijan",
 	"BA": "Bosnia and Herzegovina",
 	"BB": "Barbados",
