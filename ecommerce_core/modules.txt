@@ -1,1 +1,2 @@
 Ecommerce Core
+Shopify Connector

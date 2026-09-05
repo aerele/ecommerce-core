@@ -1,0 +1,31 @@
+# Root editor config file
+root = true
+
+# Common settings
+[*]
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+charset = utf-8
+
+# python indentation settings (matches ruff: tabs, 110 char lines)
+[*.py]
+indent_style = tab
+indent_size = 4
+max_line_length = 110
+
+# js/web indentation settings
+[{*.js,*.ts,*.vue,*.css,*.scss,*.html}]
+indent_style = tab
+indent_size = 4
+max_line_length = 99
+
+# json: frappe exports (doctype schemas) use single-space indentation
+[*.json]
+insert_final_newline = false
+indent_style = space
+indent_size = 1
+
+# markdown: keep trailing double-space line breaks
+[*.md]
+trim_trailing_whitespace = false
