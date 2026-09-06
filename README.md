@@ -9,36 +9,37 @@
 [![Linters](https://github.com/aerele/ecommerce-core/actions/workflows/linters.yml/badge.svg?branch=develop)](https://github.com/aerele/ecommerce-core/actions/workflows/linters.yml)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](license.txt)
 </div>
+<br>
+<div align="center">
+	<img src="ecommerce_core/public/images/ecommerce_core_workflow.png" alt="Ecommerce Core Workflow" />
+</div>
+<br>
 
 <div align="center">
+    <a href="https://integrations.frappe.cloud/integrations/ecommerce-integration/ecommerce-core/developer-documentation/overview-architecture">Documentation</a>
+    -
 	<a href="https://github.com/aerele/ecommerce-core">Repository</a>
 	-
-	<a href="https://github.com/aerele/ecommerce-core/blob/develop/AGENTS.md">Connector Guide</a>
+	<a href="https://github.com/aerele/ecommerce-core/blob/develop/AGENTS.md">AI Development Guide</a>
 </div>
 
 ## Ecommerce Core
 
-Ecommerce Core is the shared foundation on which standalone ERPNext ecommerce connector apps are built. Each connector (Unicommerce, Shopify) is a separate, focused app, and everything they share lives here: product matching between ERPNext and your sales channels, sync records, stock updates, schedules and channel settings.
+Ecommerce Core provides the shared contracts and provider-neutral infrastructure used by standalone ecommerce connector apps on Frappe and ERPNext. It centralizes the common models, workflows, and utilities while keeping provider-specific APIs, authentication, webhooks, and business logic inside separate connector apps.
 
-Install it alongside ERPNext, then install any connector built on top of it to get a working storefront integration for that provider.
-
-### Motivation
-
-All ecommerce integrations for ERPNext previously lived in a single monolithic app, [ecommerce_integrations](https://github.com/frappe/ecommerce_integrations). Adding a new provider meant touching one large codebase, and every integration carried the weight of all the others.
-
-From Frappe/ERPNext v16 onwards, each provider ships as its own connector app, and only the parts every channel needs (product matching, sync records, stock updates, schedules and shared screens) live here. This keeps each connector small and independently improvable, while every integration behaves consistently because it reuses the same core.
+Ecommerce Core is not an ecommerce connector by itself. Install a compatible connector app to integrate ERPNext with a supported ecommerce platform.
 
 ### Key Features
 
-- **Ecommerce Item**: Map platform products and variants to ERPNext items, look them up by platform ID, variant or SKU, create a missing item together with its mapping in one step, and keep template and variant links intact across every channel.
-- **Ecommerce Integration Log**: Record every sync job with its request data, response and error details, retry failed jobs straight from the log, individually or in bulk, capture scheduler errors per integration, and clear old successful logs automatically.
-- **Warehouse Mapping**: Keep each channel's location-to-warehouse mapping in its settings with lookups in both directions, so stock updates and orders always post against the right warehouse.
-- **Inventory Sync**: Find exactly the items whose stock changed since the last update, cover plain and group warehouses alike, and keep a per-item record of the last successful sync.
-- **Sync Schedules**: Configure how often each channel syncs orders and stock, and change intervals from the channel's settings without adding new server jobs.
-- **Customer Sync**: Create or reuse the customer for each channel order, add billing and shipping addresses, save contact details, and file channel customers under your chosen customer group.
-- **Address Mapping**: Convert platform country and state codes into ERPNext country and state names, with Indian states covered out of the box, so imported addresses validate cleanly.
-- **Tax and Price Guards**: Maintain a reserved ignore tax category and a reserved price list for integration use, stop the ignore tax category from being used in real item tax templates, and automatically discard any price saved into the reserved price list.
-- **Amendment Safety**: Warn anyone amending a synced Sales Order or Sales Invoice that taxes will not be recomputed, so amended documents get checked before submission.
+- **Product mapping**: Maintain mappings between ERPNext items and ecommerce platform products and variants.
+- **Integration logs**: Record synchronization jobs, retries, and errors across connector apps.
+- **Warehouse mapping**: Map platform locations to ERPNext warehouses.
+- **Inventory synchronization**: Detect stock changes and synchronize inventory across channels.
+- **Scheduling**: Provide configurable synchronization intervals for connector apps.
+- **Customer management**: Create and reuse ERPNext customers from ecommerce orders.
+- **Address mapping**: Convert platform addresses into ERPNext-compatible records.
+- **Tax and pricing utilities**: Provide shared tax and price list safeguards for integrations.
+- **Shared utilities**: Reuse common controllers, client scripts, and helper functions across connector apps.
 
 <details>
 <summary>Under the Hood</summary>
@@ -47,64 +48,43 @@ From Frappe/ERPNext v16 onwards, each provider ships as its own connector app, a
 
 - [**ERPNext**](https://github.com/frappe/erpnext): The open-source ERP that remains the source of truth for items, stock, accounting and sales documents. Ecommerce Core maps provider data onto ERPNext masters and transactions.
 
+- [**Connector Apps**](https://integrations.frappe.cloud/integrations/ecommerce-integration/ecommerce-core/developer-documentation/overview-architecture): Implement provider-specific APIs, authentication, webhooks, synchronization workflows, and business logic on top of Ecommerce Core.
+
 </details>
 
 ### Compatibility
 
 | Frappe Version | ERPNext Version | Python Version |
-| --------------------- | --------------------- | -------------- |
-| Version 16, Develop | Version 16, Develop | 3.10+ |
+| -------------- | --------------- | -------------- |
+| Version 16 (`develop`) | Version 16 (`develop`) | 3.14+ |
 
-## Production Setup
+## Installation
 
-### Self Hosting
+Ecommerce Core targets Frappe and ERPNext version 16 through the `develop` branch.
 
-Install on an existing bench with ERPNext already set up:
+Set up a Frappe bench by following the [Frappe installation guide](https://docs.frappe.io/framework/user/en/installation), then install ERPNext and Ecommerce Core:
 
-```bash
+```sh
+bench get-app erpnext --branch develop
 bench get-app https://github.com/aerele/ecommerce-core --branch develop
-bench --site <site> install-app ecommerce_core
+bench --site <site-name> install-app erpnext
+bench --site <site-name> install-app ecommerce_core
 ```
 
-Ecommerce Core requires ERPNext and must be installed **before** any connector app. Once it's installed, install the connector you need:
-
-```bash
-bench --site <site> install-app unicommerce
-```
-
-## Development Setup
-
-### Local
-
-1. Set up bench by following the [Installation Steps](https://docs.frappe.io/framework/user/en/installation) and keep the server running
-	```sh
-	$ bench start
-	```
-2. In a separate terminal window, run the following commands:
-	```sh
-	# create a new local site to install everything on
-	$ bench new-site ecommerce.localhost
-
-	# fetch ERPNext (v16 development branch)
-	$ bench get-app erpnext
-
-	# install ERPNext on the new site
-	$ bench --site ecommerce.localhost install-app erpnext
-
-	# fetch Ecommerce Core from this repository
-	$ bench get-app https://github.com/aerele/ecommerce-core
-
-	# install Ecommerce Core on the site (required before any connector app)
-	$ bench --site ecommerce.localhost install-app ecommerce_core
-
-	# map the site name to localhost so it's reachable in the browser
-	$ bench --site ecommerce.localhost add-to-hosts
-	```
-3. Access the site at `http://ecommerce.localhost:8000/app`
+Install a compatible connector app after Ecommerce Core. Refer to the connector's documentation for provider-specific configuration.
 
 ## Building a Connector
 
-To build a new ecommerce connector on top of Ecommerce Core, read [AGENTS.md](AGENTS.md). It specifies the full contract: app layout, settings inheritance, product and order workflows, inventory, payments, fulfillment, webhooks, logging and testing requirements.
+A standalone ecommerce connector should:
+
+1. Declare `required_apps = ["ecommerce_core"]` in `hooks.py`.
+2. Implement the required settings controller and shared contracts provided by Ecommerce Core.
+3. Keep provider-specific APIs, authentication, webhooks, and business logic inside the connector app.
+4. Reuse the shared models, utilities, and synchronization workflows provided by Ecommerce Core.
+
+See the [Developer Documentation](https://integrations.frappe.cloud/integrations/ecommerce-integration/ecommerce-core/developer-documentation/overview-architecture) for the connector architecture and integration workflow.
+
+For AI-assisted development, see the [AI Development Guide](AGENTS.md), which defines the implementation contract and development guidelines.
 
 ## Learning and Community
 
