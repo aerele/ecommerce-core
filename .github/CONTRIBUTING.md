@@ -15,7 +15,7 @@ The issue tracker is not the right place for general questions or discussions. P
 
 ## Development Setup
 
-Follow the [Development Setup](../README.md#development-setup) section in the README to get a local bench running with ERPNext, Ecommerce Core installed.
+Follow the [Installation](../README.md#installation) section in the README to get a local bench running with ERPNext, Ecommerce Core installed.
 
 ## Code Style
 
@@ -52,4 +52,4 @@ Add or update tests for every behaviour change. Bug fixes should include a test 
 
 ## Security
 
-Please do not report security vulnerabilities through public GitHub issues or pull requests. Report them privately to [developers@aerele.in](mailto:developers@aerele.in), including steps to reproduce and the affected app versions.
+Please do not report security vulnerabilities through public GitHub issues or pull requests. Report them privately to [integrations-support@aerele.in](mailto:integrations-support@aerele.in), including steps to reproduce and the affected app versions.

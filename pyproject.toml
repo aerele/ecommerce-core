@@ -2,7 +2,7 @@
 name = "ecommerce_core"
 description = "Shared core for ERPNext ecommerce integration apps"
 authors = [
-    { name = "Aerele", email = "developers@aerele.in" }
+    { name = "Aerele Technologies", email = "integrations-support@aerele.in" }
 ]
 requires-python = ">=3.10"
 readme = "./README.md"

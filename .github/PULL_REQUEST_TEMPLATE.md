@@ -7,7 +7,7 @@ Some key notes before you open a PR:
  3. All tests pass locally
  4. All business logic and validations must be on the server-side
  5. Update or add tests for the behaviour you are changing
- 6. Put `closes #XXXX` in your comment to auto-close the issue that your   fixes
+ 6. Put `closes #XXXX` in your comment to auto-close the issue that your PR fixes
 
 
 Also, if you're new here

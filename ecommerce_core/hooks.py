@@ -2,11 +2,11 @@ from . import __version__ as app_version
 
 app_name = "ecommerce_core"
 app_title = "Ecommerce Core"
-app_publisher = "Aerele"
+app_publisher = "Aerele Technologies"
 app_description = "Shared core for ERPNext ecommerce integration apps (Unicommerce, Shopify, ...)"
 app_icon = "octicon octicon-file-directory"
 app_color = "grey"
-app_email = "developers@aerele.in"
+app_email = "integrations-support@aerele.in"
 app_license = "GNU GPL v3.0"
 required_apps = ["frappe/erpnext"]
 app_logo_url = "/assets/ecommerce_core/images/ecommerce-core.png"

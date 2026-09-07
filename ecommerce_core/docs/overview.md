@@ -6,7 +6,7 @@ Currently powering integrations for **Unicommerce** and **Shopify**, with extens
 
 > **Module**: `ecommerce_core`  
 > **License**: GNU GPL v3.0  
-> **Publisher**: Aerele (developers@aerele.in)
+> **Publisher**: Aerele Technologies (integrations-support@aerele.in)
 
 ## Architecture Overview
 
