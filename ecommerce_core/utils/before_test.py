@@ -31,8 +31,6 @@ def before_tests():
 		)
 
 	frappe.db.set_value("Stock Settings", None, "auto_insert_price_list_rate_if_missing", 0)
-	# Unicommerce orders can list the same SKU in multiple rows (one per unit/package).
-	frappe.db.set_value("Selling Settings", None, "allow_multiple_items", 1)
 	enable_all_roles_and_domains()
 	create_tax_account()
 	create_currency_exchange()
