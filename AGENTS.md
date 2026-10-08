@@ -244,6 +244,8 @@ apps/<provider_connector>/
 
 Provider-specific operational DocTypes (Channel, Webhook Registration, Shipping Method, Tax Account Mapping, etc.) are fine when they represent real configuration or traceability — don't duplicate shared Ecommerce Core DocTypes.
 
+The `page/<provider>_sync_products/` folder is only needed when building a connector-local Product Sync page. When using the shared Ecommerce Core page, replace it with a product sync adapter module registered through the `ecommerce_product_sync_providers` hook (see Ecommerce Core Contracts).
+
 Keep provider transport code in `api_client.py`, provider→ERPNext transformation in domain modules, and Frappe persistence/orchestration at explicit service boundaries. Don't scatter raw HTTP calls through DocType controllers.
 
 ---
@@ -327,6 +329,28 @@ log_scheduler_errors = make_scheduler_error_logger(MODULE_NAME)
 
 Use `run_integration_job` (or the equivalent shared request-ID context) for retryable operations, storing a fully-qualified retryable method and sanitized `request_data`. Statuses: Queued, Success, Partial Success, Failure, Error, with summary counts/identifiers. Because retry re-enqueues the recorded method, retryable entrypoints must accept `payload`/`request_id`, be idempotent, and clear `frappe.flags.request_id` in `finally`.
 
+### Product Sync provider registry
+
+The shared **Product Sync page** (`/app/ecommerce-product-sync`, owned by Ecommerce Core) lists provider products with sync status and offers single and bulk sync. Connectors plug into it by registering an adapter in their own `hooks.py` — no provider-specific code goes into Ecommerce Core:
+
+```python
+ecommerce_product_sync_providers = [
+	{
+		"integration": "Medusa Connector",  # must match the Module Def / Ecommerce Item.integration value
+		"label": "Medusa",
+		"settings_doctype": "Medusa Settings",
+		"adapter": "medusa_connector.product_sync.MedusaProductSyncAdapter",
+	}
+]
+```
+
+The adapter is a plain class (no base class to inherit) instantiated per request. Contract:
+
+- Required — `is_enabled() -> bool`; `sync_product(product_id) -> dict` returning `{"action": "created" | "updated" | "skipped", ...}` (re-sync included: the adapter decides create-vs-update from the `Ecommerce Item` mapping).
+- Optional — `get_products(limit, cursor=None, search=None) -> dict` returning `{"products": [{id, name, sku, variants?, ...}], "total": int|None, "next_cursor": str|None}` (cursors are opaque; without it the page falls back to the generic mapped-items view); `get_provider_count() -> int`; `sync_all(search=None) -> dict` to run a connector-managed bulk job instead of the generic runner; `get_sync_status() -> dict` returning `{"running": bool}`.
+
+Sync status shown on the page is computed by Ecommerce Core from `Ecommerce Item` (synced / unsynced / broken mapping) and attached to the adapter's rows — adapters never compute it themselves. Bulk syncs stream progress over a per-integration realtime event (`ecommerce_core.product_sync.<slug>`) and record one `Ecommerce Integration Log` per run. The registry validates every entry at load and skips broken providers with a logged warning instead of failing the page.
+
 ---
 
 ## Settings and Configuration
@@ -384,7 +408,7 @@ Automatic sync requires all three: global toggle on, item checkbox on, and the i
 
 ### Product Synchronization Page
 
-When Products are in scope, provide a dedicated Desk page/Workspace (entirely within the connector app, no `ecommerce_core` changes) supporting: list/search/filter provider products, view sync status, sync one / selected / all products, show progress, show and retry failures. Manual sync is independent of the auto-sync setting and export checkbox unless the user asks for extra restrictions.
+Register a provider adapter through the `ecommerce_product_sync_providers` hook (see "Product Sync provider registry" under Ecommerce Core Contracts) and let the shared Ecommerce Core page provide the UI: provider product list with search and sync-status filters, sync statistics, single Sync/Re-sync, multi-select Sync Selected, Sync All with progress, and failure states. Manual sync is independent of the auto-sync setting and export checkbox unless the user asks for extra restrictions. When the shared page genuinely cannot serve a connector, a dedicated connector-local page built to the same behavioral bar remains acceptable — prefer the shared adapter first.
 
 ---
 
