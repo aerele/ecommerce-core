@@ -30,6 +30,7 @@ from ecommerce_core.product_sync.registry import (
 	ProductSyncProvider,
 	get_provider,
 	get_providers as get_registered_providers,
+	get_rejected_providers,
 )
 from ecommerce_core.utils.integration_log import create_integration_log
 
@@ -39,6 +40,13 @@ def get_providers() -> list[dict]:
 	"""Registered Product Sync providers for the page's provider selector."""
 	frappe.only_for("System Manager")
 	return [provider.as_dict() for provider in get_registered_providers()]
+
+
+@frappe.whitelist()
+def get_provider_diagnostics() -> list[dict]:
+	"""Hook entries that were rejected at load time, with the reason."""
+	frappe.only_for("System Manager")
+	return get_rejected_providers()
 
 
 @frappe.whitelist()
@@ -64,7 +72,7 @@ def get_products(
 			# Sync-state filtering scans across catalog pages; total is the
 			# provider's unfiltered count, so it is withheld in filtered mode.
 			return _filtered_provider_page(provider, limit, cursor, search, sync_filter)
-		result = provider.adapter.get_products(limit=limit, cursor=cursor, search=search) or {}
+		result = _fetch_provider_page(provider, limit, cursor, search)
 	else:
 		result = status.list_mapped_products(provider.integration, limit=limit, cursor=cursor, search=search)
 
@@ -79,6 +87,25 @@ def get_products(
 		"next_cursor": result.get("next_cursor"),
 		"limit": limit,
 	}
+
+
+def _fetch_provider_page(provider: ProductSyncProvider, limit: int, cursor: str | None, search: str | None) -> dict:
+	"""Call the adapter listing, turning remote failures into a readable message."""
+	try:
+		return provider.adapter.get_products(limit=limit, cursor=cursor, search=search) or {}
+	except Exception as e:
+		frappe.log_error(title=f"Product Sync: {provider.label} listing failed")
+		frappe.throw(
+			_(
+				"Could not fetch products from {0}. Check the connection settings and that the store is reachable. ({1})"
+			).format(provider.label, _short_error(e)),
+			title=_("{0} unreachable").format(provider.label),
+		)
+
+
+def _short_error(e: Exception) -> str:
+	text = cstr(e).strip().splitlines()[0] if cstr(e).strip() else e.__class__.__name__
+	return text[:160]
 
 
 def _filtered_provider_page(
@@ -97,7 +124,7 @@ def _filtered_provider_page(
 	next_cursor = None
 
 	for _ in range(FILTER_SCAN_PAGE_LIMIT):
-		page = provider.adapter.get_products(limit=BULK_PAGE_SIZE, cursor=adapter_cursor, search=search) or {}
+		page = _fetch_provider_page(provider, BULK_PAGE_SIZE, adapter_cursor, search)
 		if total is None:
 			total = page.get("total")
 
@@ -153,7 +180,7 @@ def get_stats(integration: str) -> dict:
 	provider = _get_provider(integration)
 
 	provider_count = None
-	if provider.enabled and callable(getattr(provider.adapter, "get_provider_count", None)):
+	if provider.enabled and provider.implements("get_provider_count"):
 		try:
 			provider_count = cint(provider.adapter.get_provider_count())
 		except Exception:
@@ -189,10 +216,15 @@ def sync_product(integration: str, product_id: str) -> dict:
 
 
 @frappe.whitelist()
-def sync_all(integration: str, search: str | None = None) -> dict:
-	"""Queue a bulk product sync (generic runner or adapter-managed)."""
+def sync_all(integration: str, search: str | None = None, sync_filter: str | None = None) -> dict:
+	"""Queue a bulk product sync (generic runner or adapter-managed).
+
+	``sync_filter`` limits the run to products in that sync state.
+	"""
 	provider = _get_enabled_provider(integration)
-	return runner.enqueue_sync_all(provider, search=cstr(search).strip() or None)
+	return runner.enqueue_sync_all(
+		provider, search=cstr(search).strip() or None, sync_filter=cstr(sync_filter).strip() or None
+	)
 
 
 @frappe.whitelist()

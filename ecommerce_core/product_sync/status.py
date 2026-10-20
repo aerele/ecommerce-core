@@ -14,7 +14,7 @@ mapping joined against ``Item``), so every provider gets identical semantics:
 from __future__ import annotations
 
 import frappe
-from frappe.query_builder.functions import Count
+from frappe.query_builder.functions import Count, Min
 from frappe.utils import cint
 
 
@@ -96,32 +96,31 @@ def list_mapped_products(
 	limit = cint(limit) or 20
 	offset = _decode_offset_cursor(cursor)
 
-	or_filters = []
+	ei = frappe.qb.DocType("Ecommerce Item")
+	where = ei.integration == integration
 	if search:
 		term = f"%{search.strip()}%"
-		or_filters = [
-			["Ecommerce Item", "integration_item_code", "like", term],
-			["Ecommerce Item", "sku", "like", term],
-			["Ecommerce Item", "erpnext_item_code", "like", term],
-		]
+		where = where & (
+			ei.integration_item_code.like(term) | ei.sku.like(term) | ei.erpnext_item_code.like(term)
+		)
 
-	filters = {"integration": integration}
-	rows = frappe.get_all(
-		"Ecommerce Item",
-		filters=filters,
-		or_filters=or_filters,
-		fields=["name", "integration_item_code", "erpnext_item_code", "sku"],
-		order_by="creation asc",
+	# One row per provider product (variants share integration_item_code), paged in SQL.
+	total = _run_count(frappe.qb.from_(ei).where(where).select(Count(ei.integration_item_code).distinct()))
+	page = (
+		frappe.qb.from_(ei)
+		.where(where)
+		.groupby(ei.integration_item_code)
+		.select(
+			ei.integration_item_code,
+			Min(ei.erpnext_item_code).as_("erpnext_item_code"),
+			Min(ei.sku).as_("sku"),
+		)
+		.orderby(Min(ei.creation))
+		.orderby(ei.integration_item_code)
+		.limit(limit)
+		.offset(offset)
+		.run(as_dict=True)
 	)
-
-	# De-duplicate provider products: variants share integration_item_code rows.
-	by_product: dict[str, dict] = {}
-	for row in rows:
-		by_product.setdefault(row.integration_item_code, row)
-
-	products = list(by_product.values())
-	total = len(products)
-	page = products[offset : offset + limit]
 
 	items = frappe.get_all(
 		"Item",

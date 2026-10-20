@@ -24,3 +24,6 @@ SYNC_FILTERS = ("synced", "unsynced", "broken")
 
 # Normalized outcomes an adapter's sync_product() may report.
 SYNC_ACTIONS = ("created", "updated", "skipped")
+
+# Minimum seconds between per-product realtime progress lines in a bulk run.
+PROGRESS_THROTTLE_SECONDS = 0.75

@@ -270,11 +270,30 @@ class ProductSyncPage {
 
 	// ----------------------------------------------------------- providers
 
+	async showDiagnostics() {
+		const { message } = await frappe.call({ method: `${API}.get_provider_diagnostics` });
+		if (!message || !message.length) return;
+		const rows = message
+			.map((r) => `<li><b>${frappe.utils.escape_html(r.integration)}</b>: ${frappe.utils.escape_html(r.reason)}</li>`)
+			.join("");
+		this.wrapper.find("#eps-diagnostics").remove();
+		this.wrapper
+			.find("#eps-provider-select")
+			.closest(".form-group, div")
+			.first()
+			.before(
+				`<div id="eps-diagnostics" class="alert alert-warning"><b>${__(
+					"Some providers were not loaded"
+				)}</b><ul class="mb-0">${rows}</ul></div>`
+			);
+	}
+
 	async loadProviders() {
 		const { message } = await frappe.call({ method: `${API}.get_providers` });
 		this.providers = message || [];
 
 		const select = this.wrapper.find("#eps-provider-select").empty();
+		this.showDiagnostics();
 
 		if (!this.providers.length) {
 			this.wrapper.find("#eps-list-title").text(__("Products"));
@@ -657,6 +676,7 @@ class ProductSyncPage {
 				args: {
 					integration: this.provider.integration,
 					search: this.wrapper.find("#eps-search").val(),
+					sync_filter: this.wrapper.find("#eps-sync-filter").val(),
 				},
 			});
 			if (message?.status === "Busy") {
@@ -748,7 +768,7 @@ class ProductSyncPage {
 		this.syncRunning = running;
 		const $btn = this.wrapper.find("#eps-sync-all");
 		$btn.prop("disabled", running || !this.provider?.enabled);
-		$btn.text(running ? __("Syncing…") : __("Sync All Items"));
+		$btn.text(running ? __("Syncing...") : __("Sync All Items"));
 		this.updateSelectionUI();
 	}
 }

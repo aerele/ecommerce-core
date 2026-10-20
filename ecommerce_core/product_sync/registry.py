@@ -16,7 +16,9 @@ Connector apps register a provider adapter through the
 		}
 	]
 
-An adapter is a plain class instantiated once per request. Contract:
+An adapter is a class instantiated once per request. Subclass
+``ecommerce_core.product_sync.adapter.ProductSyncAdapter`` (plain duck-typed
+classes are still accepted). Contract:
 
 	Required:
 		is_enabled() -> bool
@@ -45,6 +47,7 @@ import frappe
 from frappe import _
 from frappe.utils import cstr
 
+from ecommerce_core.product_sync.adapter import ProductSyncAdapter
 from ecommerce_core.product_sync.constants import (
 	EVENT_NAME_PREFIX,
 	HOOK_NAME,
@@ -94,11 +97,22 @@ class ProductSyncProvider:
 
 	@property
 	def can_list_products(self) -> bool:
-		return callable(getattr(self.adapter, "get_products", None))
+		return self._supports("supports_listing", "get_products")
 
 	@property
 	def has_custom_bulk_sync(self) -> bool:
-		return callable(getattr(self.adapter, "sync_all", None))
+		return self._supports("supports_bulk", "sync_all")
+
+	def implements(self, method: str) -> bool:
+		"""True when the adapter really provides an optional method (not the ABC stub)."""
+		if isinstance(self.adapter, ProductSyncAdapter):
+			return self.adapter._overrides(method)
+		return callable(getattr(self.adapter, method, None))
+
+	def _supports(self, flag: str, method: str) -> bool:
+		if isinstance(self.adapter, ProductSyncAdapter):
+			return bool(getattr(self.adapter, flag))
+		return callable(getattr(self.adapter, method, None))
 
 	def as_dict(self) -> dict:
 		return {
@@ -111,13 +125,27 @@ class ProductSyncProvider:
 			"event_name": self.event_name,
 			"custom_bulk_sync": self.has_custom_bulk_sync,
 			"can_list_products": self.can_list_products,
+			"supports_search": self._supports("supports_search", "get_products"),
 		}
+
+
+def get_rejected_providers() -> list[dict]:
+	"""Hook entries that failed validation, as ``{"integration", "reason"}`` (for diagnostics)."""
+	get_providers()
+	return list(getattr(frappe.local, "_product_sync_rejected", []))
+
+
+def _reject(entry, reason: str) -> None:
+	label = cstr(entry.get("integration")) if isinstance(entry, dict) else cstr(entry)
+	frappe.logger(LOGGER).warning(f"Ignoring Product Sync provider {label}: {reason}")
+	frappe.local._product_sync_rejected.append({"integration": label, "reason": reason})
 
 
 def get_providers() -> list[ProductSyncProvider]:
 	"""All validated providers registered through the hook, memoized per request."""
 	providers = getattr(frappe.local, "_product_sync_providers", None)
 	if providers is None:
+		frappe.local._product_sync_rejected = []
 		providers = frappe.local._product_sync_providers = _load_providers()
 	return providers
 
@@ -152,7 +180,7 @@ def _load_providers() -> list[ProductSyncProvider]:
 
 def _build_provider(entry) -> ProductSyncProvider | None:
 	if not isinstance(entry, dict):
-		frappe.logger(LOGGER).warning(f"Ignoring malformed {HOOK_NAME} entry: {entry!r}")
+		_reject(entry, "malformed hook entry (expected a dict)")
 		return None
 
 	integration = cstr(entry.get("integration")).strip()
@@ -161,37 +189,28 @@ def _build_provider(entry) -> ProductSyncProvider | None:
 	settings_doctype = cstr(entry.get("settings_doctype")).strip() or None
 
 	if not integration or not adapter_path:
-		frappe.logger(LOGGER).warning(
-			f"Ignoring incomplete {HOOK_NAME} entry: 'integration' and 'adapter' are required"
-		)
+		_reject(entry, "'integration' and 'adapter' are required")
 		return None
 
 	if not frappe.db.exists("Module Def", integration):
-		frappe.logger(LOGGER).warning(
-			f"Ignoring Product Sync provider {integration}: not a Module Def"
-		)
+		_reject(entry, "integration must equal an existing Module Def name")
 		return None
 
 	if settings_doctype and not frappe.db.exists("DocType", settings_doctype):
-		frappe.logger(LOGGER).warning(
-			f"Ignoring Product Sync provider {integration}: settings DocType {settings_doctype} not found"
-		)
+		_reject(entry, f"settings DocType {settings_doctype} not found")
 		return None
 
 	try:
 		adapter_cls = frappe.get_attr(adapter_path)
 		adapter = adapter_cls()
 	except Exception:
-		frappe.logger(LOGGER).warning(
-			f"Product Sync adapter {adapter_path} failed to load: {frappe.get_traceback()}"
-		)
+		frappe.logger(LOGGER).warning(f"Adapter {adapter_path} failed to load: {frappe.get_traceback()}")
+		_reject(entry, f"adapter {adapter_path} failed to load (see logs)")
 		return None
 
 	missing = [m for m in REQUIRED_ADAPTER_METHODS if not callable(getattr(adapter, m, None))]
 	if missing:
-		frappe.logger(LOGGER).warning(
-			f"Product Sync adapter {adapter_path} is missing required method(s): {', '.join(missing)}"
-		)
+		_reject(entry, f"adapter is missing required method(s): {', '.join(missing)}")
 		return None
 
 	return ProductSyncProvider(
