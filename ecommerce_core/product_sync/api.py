@@ -51,7 +51,7 @@ def get_provider_diagnostics() -> list[dict]:
 
 @frappe.whitelist()
 def get_products(
-	integration: str,
+	integration: str | None = None,
 	limit: int = 20,
 	cursor: str | None = None,
 	search: str | None = None,
@@ -59,34 +59,146 @@ def get_products(
 ) -> dict:
 	"""One page of provider products, enriched with generic sync status.
 
-	``sync_filter`` (synced/unsynced/broken) is applied after enrichment, so it
-	may shrink a page below ``limit``; the page size stays the provider's page.
-	"""
-	provider = _get_enabled_provider(integration)
+	A blank ``integration`` spans every enabled provider: rows are tagged with
+	``integration``/``provider_label`` and the cursor walks the registry in
+	order, so the UI can show one combined list.
 
+	``sync_filter`` (synced/unsynced/broken) is applied after enrichment, so it
+	may shrink a page below ``limit``.
+	"""
+	frappe.only_for("System Manager")
 	limit = cint(limit) or DEFAULT_PAGE_SIZE
 	limit = min(max(limit, 1), MAX_PAGE_SIZE)
 
-	if provider.can_list_products:
-		if sync_filter in SYNC_FILTERS:
-			# Sync-state filtering scans across catalog pages; total is the
-			# provider's unfiltered count, so it is withheld in filtered mode.
-			return _filtered_provider_page(provider, limit, cursor, search, sync_filter)
-		result = _fetch_provider_page(provider, limit, cursor, search)
-	else:
-		result = status.list_mapped_products(provider.integration, limit=limit, cursor=cursor, search=search)
+	if not cstr(integration).strip():
+		return _merged_products_page(limit, cursor, search, sync_filter)
 
-	products = status.attach_sync_status(provider.integration, result.get("products") or [])
+	return _provider_page(_get_enabled_provider(integration), limit, cursor, search, sync_filter)
 
-	if sync_filter in SYNC_FILTERS:
-		products = [p for p in products if p.get("sync_state") == sync_filter]
+
+def _provider_page(
+	provider: ProductSyncProvider, limit: int, cursor: str | None, search: str | None, sync_filter: str | None
+) -> dict:
+	"""``limit`` enriched rows for one provider, spanning adapter pages as needed.
+
+	Adapters cap their own page window (e.g. Shopify's GraphQL query), so page
+	sizes beyond ``BULK_PAGE_SIZE`` are stitched from consecutive adapter calls;
+	the returned cursor points past the last consumed adapter page, keeping the
+	client's Prev/Next cursor history valid.
+	"""
+	filtered = sync_filter in SYNC_FILTERS
+	products: list[dict] = []
+	total = None
+	adapter_cursor = cursor
+
+	for _ in range(FILTER_SCAN_PAGE_LIMIT):
+		page_size = min(limit - len(products), BULK_PAGE_SIZE)
+		if provider.can_list_products:
+			if filtered:
+				result = _filtered_provider_page(provider, page_size, adapter_cursor, search, sync_filter)
+			else:
+				result = _fetch_provider_page(provider, page_size, adapter_cursor, search)
+		else:
+			result = status.list_mapped_products(
+				provider.integration, limit=page_size, cursor=adapter_cursor, search=search
+			)
+
+		rows = status.attach_sync_status(provider.integration, result.get("products") or [])
+		if filtered:
+			rows = [p for p in rows if p.get("sync_state") == sync_filter]
+
+		if total is None:
+			total = result.get("total")
+		products.extend(rows)
+		adapter_cursor = result.get("next_cursor")
+
+		if len(products) >= limit or not adapter_cursor:
+			break
+
+	return {"products": products, "total": total, "next_cursor": adapter_cursor, "limit": limit}
+
+
+def _merged_products_page(limit: int, cursor: str | None, search: str | None, sync_filter: str | None) -> dict:
+	"""One page stitched across all enabled providers, in registry order.
+
+	The cursor is an ``m:`` envelope holding the provider index plus that
+	provider's own cursor, so pagination resumes exactly across provider
+	boundaries. One unreachable connector is skipped and reported in
+	``errors`` instead of failing the whole combined page.
+	"""
+	providers = [p for p in get_registered_providers() if p.enabled]
+	if not providers:
+		return {"products": [], "total": 0, "next_cursor": None, "limit": limit, "errors": []}
+
+	start_index, provider_cursor = _decode_merged_cursor(cursor)
+	collected: list[dict] = []
+	totals: list | None = []
+	errors: list[dict] = []
+	next_cursor = None
+
+	for index in range(start_index, len(providers)):
+		provider = providers[index]
+		inner_cursor = provider_cursor if index == start_index else None
+
+		# Keep consuming the provider until the page fills, the provider runs
+		# out, or its scan cap leaves a cursor to resume from on the next
+		# request (otherwise its remaining rows would be skipped).
+		while True:
+			try:
+				page = _provider_page(provider, limit - len(collected), inner_cursor, search, sync_filter)
+			except Exception as e:
+				frappe.log_error(title=f"Product Sync: {provider.label} listing failed")
+				errors.append(
+					{"integration": provider.integration, "label": provider.label, "error": _short_error(e)}
+				)
+				inner_cursor = None
+				break
+
+			if page.get("total") is None:
+				totals = None
+			elif totals is not None:
+				totals.append(page["total"])
+
+			rows = page.get("products") or []
+			for row in rows:
+				row["integration"] = provider.integration
+				row["provider_label"] = provider.label
+			collected.extend(rows)
+
+			inner_cursor = page.get("next_cursor")
+			if len(collected) >= limit or not inner_cursor:
+				break
+
+		if len(collected) >= limit:
+			if inner_cursor:
+				next_cursor = _encode_merged_cursor(index, inner_cursor)
+			elif index + 1 < len(providers):
+				# Provider boundary reached exactly: continue with the next one.
+				next_cursor = _encode_merged_cursor(index + 1, None)
+			break
 
 	return {
-		"products": products,
-		"total": result.get("total"),
-		"next_cursor": result.get("next_cursor"),
+		"products": collected,
+		"total": sum(totals) if totals else None,
+		"next_cursor": next_cursor,
 		"limit": limit,
+		"errors": errors,
 	}
+
+
+def _encode_merged_cursor(index: int, inner_cursor: str | None) -> str:
+	payload = json.dumps({"i": index, "c": inner_cursor}, separators=(",", ":"))
+	return "m:" + base64.b64encode(payload.encode()).decode()
+
+
+def _decode_merged_cursor(cursor: str | None) -> tuple[int, str | None]:
+	if not cursor or not str(cursor).startswith("m:"):
+		return 0, None
+	try:
+		data = json.loads(base64.b64decode(str(cursor)[2:]))
+		return max(int(data.get("i") or 0), 0), data.get("c")
+	except Exception:
+		return 0, None
 
 
 def _fetch_provider_page(provider: ProductSyncProvider, limit: int, cursor: str | None, search: str | None) -> dict:

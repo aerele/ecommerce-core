@@ -9,7 +9,9 @@ JOB_NAME_PREFIX = "ecommerce_core.product_sync"
 EVENT_NAME_PREFIX = "ecommerce_core.product_sync"
 
 DEFAULT_PAGE_SIZE = 20
-MAX_PAGE_SIZE = 100
+MAX_PAGE_SIZE = 2500
+# Adapter calls are chunked at this size (remote APIs cap their page window),
+# so the client can request page sizes up to MAX_PAGE_SIZE.
 BULK_PAGE_SIZE = 100
 BULK_SYNC_QUEUE = "long"
 BULK_SYNC_TIMEOUT = 3600

@@ -6,6 +6,9 @@
 
 const API = "ecommerce_core.product_sync.api";
 
+// Page sizes offered in the bottom paging bar, list-view style.
+const PAGE_SIZES = [20, 50, 100, 500, 2500];
+
 frappe.pages["ecommerce-product-sync"].on_page_load = function (wrapper) {
 	const page = frappe.ui.make_app_page({
 		parent: wrapper,
@@ -22,6 +25,7 @@ class ProductSyncPage {
 		this.page = page;
 		this.providers = [];
 		this.provider = null; // active provider dict from the registry
+		this.allMode = true; // blank integration = all connectors combined
 		this.limit = 20;
 		this.cursorHistory = [null]; // cursors of visited pages; index == current page
 		this.pageIndex = 0;
@@ -29,15 +33,20 @@ class ProductSyncPage {
 		this.total = null;
 		this.allProducts = [];
 		this.selectedIds = new Set();
+		this.selectedInfo = {}; // id -> {integration, label}, so selections from other pages still sync
+		this.providerErrors = []; // per-provider listing failures in All mode
 		this.syncRunning = false;
 		this._filterTimer = null;
-		this._realtimeEvent = null;
+		this._realtimeEvents = [];
+		this._applyingChecks = false;
+		this._tableMode = null;
 		this.init();
 	}
 
 	async init() {
 		this.addMarkup();
 		this.bindActions();
+		this.setupPageSizeBar();
 		await this.loadProviders();
 	}
 
@@ -92,7 +101,7 @@ class ProductSyncPage {
 				.eps-page .row.eps-grid > [class*="col-"] { display: flex; flex-direction: column; min-height: 0; }
 				.eps-page .eps-products-card { display: flex; flex-direction: column; }
 				.eps-page .eps-products-card-header,
-				.eps-page .eps-datatable-footer { flex: 0 0 auto; }
+				.eps-page .eps-list-footer { flex: 0 0 auto; }
 				.eps-page .eps-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 				.eps-page .eps-toolbar .form-control { height: 28px; min-height: 28px; }
 				.eps-page #eps-product-list { width: 100%; overflow-x: auto; }
@@ -118,6 +127,17 @@ class ProductSyncPage {
 					display: none; padding: 10px 12px; border-radius: 6px; margin-bottom: 12px;
 					background: var(--bg-color); border: 1px solid var(--border-color);
 				}
+
+				/* ---- Paging bar (list-view style) ---- */
+				.eps-list-footer { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border-color); }
+				.eps-list-footer .level {
+					display: flex; align-items: center; justify-content: space-between;
+					flex-wrap: wrap; gap: 8px; width: 100%;
+				}
+				.eps-list-footer .level-left,
+				.eps-list-footer .level-right { display: flex; align-items: center; }
+				.eps-list-footer .eps-paging { gap: 12px; flex-wrap: wrap; }
+
 				.eps-variant-toggle { text-decoration: none; border: none; background: transparent; padding: 0; }
 				.eps-variant-popover {
 					background: var(--card-bg, #fff);
@@ -161,26 +181,29 @@ class ProductSyncPage {
 										<option value="">${__("All items")}</option>
 										<option value="synced">${__("Synced")}</option>
 										<option value="unsynced">${__("Not Synced")}</option>
-										<option value="broken">${__("Broken Mapping")}</option>
 									</select>
-									<select class="form-control form-control-sm" id="eps-page-size" style="width: 80px;">
-										<option value="20">${__("20 / page")}</option>
-										<option value="50">${__("50 / page")}</option>
-									</select>
-									<label class="small text-muted" style="display: flex; align-items: center; gap: 4px; margin: 0;">
-										<input type="checkbox" id="eps-select-all"> ${__("Select all")}
-									</label>
 									<button type="button" class="btn btn-sm btn-default" id="eps-sync-selected" disabled>
 										${__("Sync Selected")}
 									</button>
 								</div>
 							</div>
 							<div id="eps-product-list"><div class="text-center text-muted py-4">${__("Loading…")}</div></div>
-							<div class="eps-datatable-footer mt-2 pt-3 pb-2 border-top d-flex justify-content-between align-items-center" style="display: none;">
-								<span class="text-muted small page-info"></span>
-								<div class="btn-group">
-									<button type="button" class="btn btn-sm btn-default btn-paginate btn-prev">${__("Prev")}</button>
-									<button type="button" class="btn btn-sm btn-default btn-paginate btn-next">${__("Next")}</button>
+							<div class="eps-list-footer" style="display: none;">
+								<div class="level">
+									<div class="level-left">
+										<span class="text-muted small page-info"></span>
+									</div>
+									<div class="level-right eps-paging">
+										<div class="btn-group">
+											<button type="button" class="btn btn-sm btn-default btn-prev" title="${__("Previous page")}">
+												<i class="fa fa-angle-left"></i>
+											</button>
+											<button type="button" class="btn btn-sm btn-default btn-next" title="${__("Next page")}">
+												<i class="fa fa-angle-right"></i>
+											</button>
+										</div>
+										<div class="eps-page-size"></div>
+									</div>
 								</div>
 							</div>
 						</div>
@@ -192,7 +215,7 @@ class ProductSyncPage {
 								${__("Sync All Items")}
 							</button>
 							<div class="eps-stats">
-								<div><h3 class="mb-0" id="eps-stat-provider">-</h3><p class="text-muted small">${__("Provider")}</p></div>
+								<div><h3 class="mb-0" id="eps-stat-provider">-</h3><p class="text-muted small" id="eps-stat-provider-label">${__("Provider")}</p></div>
 								<div><h3 class="mb-0" id="eps-stat-mapped">-</h3><p class="text-muted small">${__("Mapped")}</p></div>
 								<div><h3 class="mb-0" id="eps-stat-synced">-</h3><p class="text-muted small">${__("Synced")}</p></div>
 							</div>
@@ -214,10 +237,9 @@ class ProductSyncPage {
 	// ------------------------------------------------------------- wiring
 
 	bindActions() {
+		// Blank integration = all connectors, like an empty list-view filter.
 		this.wrapper.on("change", "#eps-provider-select", () => {
-			const integration = this.wrapper.find("#eps-provider-select").val();
-			const provider = this.providers.find((p) => p.integration === integration);
-			if (provider) this.setProvider(provider);
+			this.setIntegration(this.wrapper.find("#eps-provider-select").val() || "");
 		});
 
 		this.wrapper.on("input", "#eps-search", () => {
@@ -233,10 +255,6 @@ class ProductSyncPage {
 		});
 
 		this.wrapper.on("change", "#eps-sync-filter", () => this.resetAndFetch());
-		this.wrapper.on("change", "#eps-page-size", () => {
-			this.limit = parseInt(this.wrapper.find("#eps-page-size").val(), 10) || 20;
-			this.resetAndFetch();
-		});
 
 		this.wrapper.on("click", ".btn-prev", () => this.goPrev());
 		this.wrapper.on("click", ".btn-next", () => this.goNext());
@@ -246,26 +264,22 @@ class ProductSyncPage {
 		this.wrapper.on("click", "#eps-sync-all", () => this.startBulk());
 		this.wrapper.on("click", "#eps-sync-selected", () => this.syncSelected());
 
-		this.wrapper.on("change", ".eps-row-select", (e) => {
-			const id = $(e.currentTarget).attr("data-id");
-			if (!id) return;
-			if (e.currentTarget.checked) this.selectedIds.add(id);
-			else this.selectedIds.delete(id);
-			this.updateSelectionUI();
-		});
-
-		this.wrapper.on("change", "#eps-select-all", (e) => {
-			const checked = e.currentTarget.checked;
-			this.allProducts.forEach((p) => {
-				if (!p.id) return;
-				if (checked) this.selectedIds.add(p.id);
-				else this.selectedIds.delete(p.id);
-			});
-			this.renderTable();
-		});
-
 		this.wrapper.on("mouseenter", ".eps-variant-toggle", (e) => this.showVariantDropdown(e.currentTarget));
 		this.wrapper.on("mouseleave", ".eps-variant-toggle", () => this.scheduleVariantClose());
+	}
+
+	setupPageSizeBar() {
+		// Same segmented pill control the list view uses for its paging bar.
+		this.pageSizeButtons = new frappe.ui.TabButtons({
+			label: __("Page Size"),
+			options: PAGE_SIZES.map((value) => ({ label: String(value), value })),
+			value: this.limit,
+			on_change: (value) => {
+				this.limit = cint(value) || this.limit;
+				this.resetAndFetch();
+			},
+		});
+		this.wrapper.find(".eps-page-size").append(this.pageSizeButtons.$el);
 	}
 
 	// ----------------------------------------------------------- providers
@@ -295,6 +309,9 @@ class ProductSyncPage {
 		const select = this.wrapper.find("#eps-provider-select").empty();
 		this.showDiagnostics();
 
+		// Leading blank entry, like a list-view filter: blank shows every integration.
+		select.append($("<option>", { value: "", text: "" }));
+
 		if (!this.providers.length) {
 			this.wrapper.find("#eps-list-title").text(__("Products"));
 			this.wrapper
@@ -313,9 +330,7 @@ class ProductSyncPage {
 		}
 
 		const wanted = this.preselectProvider();
-		const provider = this.providers.find((p) => p.integration === wanted) || this.providers[0];
-		select.val(provider.integration);
-		this.setProvider(provider);
+		this.setIntegration(wanted || "");
 	}
 
 	preselectProvider() {
@@ -329,10 +344,24 @@ class ProductSyncPage {
 		).integration;
 	}
 
-	setProvider(provider) {
+	enabledProviders() {
+		return this.providers.filter((p) => p.enabled);
+	}
+
+	canSync() {
+		return this.allMode ? this.enabledProviders().length > 0 : !!this.provider?.enabled;
+	}
+
+	setIntegration(integration) {
+		const provider = this.providers.find((p) => p.integration === integration) || null;
+		this.allMode = !provider;
 		this.provider = provider;
+		this.providerErrors = [];
 		this.closeVariantDropdown();
 		this.selectedIds.clear();
+		this.selectedInfo = {};
+
+		this.wrapper.find("#eps-provider-select").val(provider ? provider.integration : "");
 
 		this.cursorHistory = [null];
 		this.pageIndex = 0;
@@ -341,9 +370,32 @@ class ProductSyncPage {
 		this.wrapper.find("#eps-search").val("");
 		this.wrapper.find("#eps-sync-filter").val("");
 
+		this.renderProviderBar();
+
+		this.toggleBulkButtons(false);
+		this.subscribeRealtime();
+		this.fetchStats();
+		this.fetchProducts();
+		this.checkSyncStatus();
+	}
+
+	renderProviderBar() {
+		const $state = this.wrapper.find("#eps-provider-state");
+		const $settings = this.wrapper.find("#eps-settings-link");
+		const $banner = this.wrapper.find("#eps-banner").hide();
+
+		if (this.allMode) {
+			// Combined view: per-integration state pill and settings shortcut
+			// would point nowhere in particular, so they stay hidden.
+			this.wrapper.find("#eps-list-title").text(__("All Integrations"));
+			$state.empty();
+			$settings.hide();
+			return;
+		}
+
+		const provider = this.provider;
 		this.wrapper.find("#eps-list-title").text(__("Products in {0}", [provider.label]));
 
-		const $settings = this.wrapper.find("#eps-settings-link");
 		if (provider.settings_doctype) {
 			$settings
 				.text(`${__(provider.settings_doctype)} →`)
@@ -353,11 +405,8 @@ class ProductSyncPage {
 			$settings.hide();
 		}
 
-		const $state = this.wrapper.find("#eps-provider-state");
-		const $banner = this.wrapper.find("#eps-banner");
 		if (provider.enabled) {
 			$state.html(`<span class="indicator-pill green">${__("Enabled")}</span>`);
-			$banner.hide();
 		} else {
 			$state.html(`<span class="indicator-pill red">${__("Disabled")}</span>`);
 			$banner
@@ -371,18 +420,18 @@ class ProductSyncPage {
 				)
 				.show();
 		}
-
-		this.toggleBulkButtons(false);
-		this.subscribeRealtime();
-		this.fetchStats();
-		this.fetchProducts();
-		this.checkSyncStatus();
 	}
 
 	subscribeRealtime() {
-		if (this._realtimeEvent) frappe.realtime.off(this._realtimeEvent);
-		this._realtimeEvent = this.provider.event_name;
-		frappe.realtime.on(this._realtimeEvent, (payload) => this.onRealtime(payload));
+		this._realtimeEvents.forEach((event) => frappe.realtime.off(event));
+		this._realtimeEvents = this.allMode
+			? this.enabledProviders().map((p) => p.event_name)
+			: this.provider
+				? [this.provider.event_name]
+				: [];
+		this._realtimeEvents.forEach((event) =>
+			frappe.realtime.on(event, (payload) => this.onRealtime(payload))
+		);
 	}
 
 	// ------------------------------------------------------------ products
@@ -394,21 +443,35 @@ class ProductSyncPage {
 	}
 
 	async fetchProducts() {
-		if (!this.provider) return;
+		if (!this.allMode && !this.provider) return;
 		const list = this.wrapper.find("#eps-product-list");
 
-		if (!this.provider.enabled) {
+		if (!this.allMode && !this.provider.enabled) {
+			this.destroyTable();
 			list.html(`<div class="text-center text-muted py-4">${__("Integration is disabled.")}</div>`);
-			this.wrapper.find(".eps-datatable-footer").hide();
+			this.wrapper.find(".eps-list-footer").hide();
+			return;
+		}
+		if (this.allMode && !this.enabledProviders().length) {
+			this.destroyTable();
+			list.html(`<div class="text-center text-muted py-4">${__(
+				"No enabled ecommerce integrations. Enable one from its settings to list products."
+			)}</div>`);
+			this.wrapper.find(".eps-list-footer").hide();
 			return;
 		}
 
-		list.html(`<div class="text-center text-muted py-4">${__("Loading…")}</div>`);
+		// The loading placeholder replaces the DataTable's DOM, so only show it
+		// when there is no live table to keep rendered while fetching.
+		const hasLiveTable = this.table && list.children(".datatable").length > 0;
+		if (!hasLiveTable || !this.allProducts.length) {
+			list.html(`<div class="text-center text-muted py-4">${__("Loading…")}</div>`);
+		}
 		try {
 			const { message } = await frappe.call({
 				method: `${API}.get_products`,
 				args: {
-					integration: this.provider.integration,
+					integration: this.allMode ? "" : this.provider.integration,
 					limit: this.limit,
 					cursor: this.cursorHistory[this.pageIndex],
 					search: this.wrapper.find("#eps-search").val(),
@@ -419,86 +482,124 @@ class ProductSyncPage {
 			this.allProducts = message.products || [];
 			this.total = message.total;
 			this.nextCursor = message.next_cursor;
+			this.providerErrors = message.errors || [];
+			this.renderErrorsBanner();
 			this.renderTable();
 		} catch (e) {
+			this.providerErrors = [];
+			this.destroyTable();
 			list.html(`<div class="text-danger py-4">${__("Could not load products. Check the integration settings.")}</div>`);
-			this.wrapper.find(".eps-datatable-footer").hide();
+			this.wrapper.find(".eps-list-footer").hide();
 		}
+	}
+
+	renderErrorsBanner() {
+		const $banner = this.wrapper.find("#eps-banner");
+		if (!this.allMode || !this.providerErrors.length) {
+			if (this.allMode) $banner.hide();
+			return;
+		}
+		const rows = this.providerErrors
+			.map(
+				(e) =>
+					`<li><b>${frappe.utils.escape_html(e.label || e.integration)}</b>: ${frappe.utils.escape_html(
+						e.error || __("unreachable")
+					)}</li>`
+			)
+			.join("");
+		$banner
+			.html(`<b>${__("Some integrations could not be listed")}</b><ul class="mb-0">${rows}</ul>`)
+			.show();
 	}
 
 	renderTable() {
 		this.closeVariantDropdown();
 		const list = this.wrapper.find("#eps-product-list");
 		const rows = this.allProducts;
+		const mode = this.allMode ? "all" : "provider";
 
 		if (!rows.length) {
+			this.destroyTable();
 			list.html(`<div class="text-center text-muted py-4">${__("No products found")}</div>`);
-			this.wrapper.find(".eps-datatable-footer").hide();
+			this.wrapper.find(".eps-list-footer").hide();
 			return;
 		}
 
-		const data = rows.map((p, idx) => ({
-			[__("Select")]: `<input type="checkbox" class="eps-row-select" data-id="${frappe.utils.escape_html(
-				p.id || ""
-			)}"${this.selectedIds.has(p.id) ? " checked" : ""}>`,
-			[__("S.No")]: this.pageIndex * this.limit + idx + 1,
-			[__("Product ID")]: frappe.utils.escape_html(p.id || ""),
-			[__("Product Name")]: frappe.utils.escape_html(p.name || ""),
-			[__("SKU")]: this.variantCell(p),
-			[__("Sync Status")]: this.syncStatusPill(p.sync_state),
-			[__("Actions")]: `<div class="eps-action-cell"><button type="button" class="btn btn-default btn-xs ${
+		const data = rows.map((p, idx) => {
+			const row = {
+				[__("S.No")]: this.pageIndex * this.limit + idx + 1,
+			};
+			if (this.allMode) {
+				row[__("Integration")] = frappe.utils.escape_html(p.provider_label || p.integration || "");
+			}
+			row[__("Product ID")] = frappe.utils.escape_html(p.id || "");
+			row[__("Product Name")] = frappe.utils.escape_html(p.name || "");
+			row[__("SKU")] = this.variantCell(p);
+			row[__("Sync Status")] = this.syncStatusPill(p.sync_state);
+			row[__("Actions")] = `<div class="eps-action-cell"><button type="button" class="btn btn-default btn-xs ${
 				p.synced ? "btn-resync-one" : "btn-sync-one"
-			}" data-id="${frappe.utils.escape_html(p.id || "")}">${p.synced ? __("Re-sync") : __("Sync")}</button></div>`,
-		}));
+			}" data-id="${frappe.utils.escape_html(
+				p.id || ""
+			)}" data-integration="${frappe.utils.escape_html(p.integration || "")}">${
+				p.synced ? __("Re-sync") : __("Sync")
+			}</button></div>`;
+			return row;
+		});
 
-		const columns = [
-			{ name: __("Select"), editable: false, focusable: false, align: "center", width: 55 },
-			{ name: __("S.No"), editable: false, focusable: false, align: "center", width: 60 },
+		const columns = [{ name: __("S.No"), editable: false, focusable: false, align: "center", width: 60 }];
+		if (this.allMode) {
+			columns.push({ name: __("Integration"), editable: false, focusable: false, width: 140 });
+		}
+		columns.push(
 			{ name: __("Product ID"), editable: false, focusable: false, width: 250 },
 			{ name: __("Product Name"), editable: false, focusable: false, width: 230 },
 			{ name: __("SKU"), editable: false, focusable: false, width: 190 },
 			{ name: __("Sync Status"), editable: false, focusable: false, align: "center", width: 155 },
-			{ name: __("Actions"), editable: false, focusable: false, align: "center", width: 115 },
-		];
+			{ name: __("Actions"), editable: false, focusable: false, align: "center", width: 115 }
+		);
 
-		let rendered = false;
-		if (this.table && typeof this.table.refresh === "function") {
+		// Rebuild when the mode's column set changes or the previous DOM was
+		// replaced (loading/error placeholders detach the table); otherwise
+		// refresh in place.
+		let canRefresh =
+			mode === this._tableMode &&
+			this.table &&
+			typeof this.table.refresh === "function" &&
+			list.children(".datatable").length > 0;
+		if (canRefresh) {
 			try {
 				this.table.refresh(data);
-				rendered = true;
 			} catch (e) {
-				rendered = false;
+				canRefresh = false;
 			}
 		}
-		if (!rendered) {
-			list.empty();
-			if (this.table && typeof this.table.destroy === "function") {
-				try {
-					this.table.destroy();
-				} catch (e) {
-					/* ignore stale instance */
-				}
-				this.table = null;
-			}
+		if (!canRefresh) {
+			this.destroyTable();
+			// The DataTable's own checkbox column: the header checkbox selects
+			// every row on the page, exactly like the list view's selector.
 			this.table = new frappe.DataTable(list[0], {
 				columns,
 				data,
 				layout: "fixed",
 				serialNoColumn: false,
-				checkboxColumn: false,
+				checkboxColumn: true,
+				checkedRowStatus: false,
 				inlineFilters: false,
 				noDataMessage: __("No products found"),
+				events: {
+					onCheckRow: () => this.onTableCheck(),
+				},
 			});
+			this._tableMode = mode;
 		}
+		this.applyChecks();
 
 		const knownTotal = this.total != null;
 		const pageInfo = knownTotal
 			? `${rows.length ? this.pageIndex * this.limit + 1 : 0}-${this.pageIndex * this.limit + rows.length} ${__("of")} ${this.total}`
 			: `${__("Page")} ${this.pageIndex + 1}`;
 		this.wrapper.find(".page-info").text(pageInfo);
-		this.wrapper
-			.find(".eps-datatable-footer")
-			.css({ display: "flex", visibility: "visible" });
+		this.wrapper.find(".eps-list-footer").show();
 		this.wrapper.find(".btn-prev").prop("disabled", this.pageIndex === 0);
 		const hasNext = knownTotal
 			? (this.pageIndex + 1) * this.limit < this.total
@@ -507,16 +608,70 @@ class ProductSyncPage {
 		this.updateSelectionUI();
 	}
 
+	destroyTable() {
+		if (this.table && typeof this.table.destroy === "function") {
+			try {
+				this.table.destroy();
+			} catch (e) {
+				/* ignore stale instance */
+			}
+		}
+		this.table = null;
+		this._tableMode = null;
+	}
+
+	onTableCheck() {
+		if (this._applyingChecks || !this.table) return;
+		const checked = new Set(
+			(this.table.rowmanager.getCheckedRows() || [])
+				.map((rowIndex) => this.allProducts[rowIndex]?.id)
+				.filter(Boolean)
+		);
+		// Selection is kept across pages: only this page's ids follow the
+		// checkboxes; ids selected on other pages stay in the set. selectedInfo
+		// remembers each id's integration and name so bulk actions work even
+		// when the row is not on the current page.
+		this.allProducts.forEach((p) => {
+			if (!p.id) return;
+			if (checked.has(p.id)) {
+				this.selectedIds.add(p.id);
+				this.selectedInfo[p.id] = {
+					integration: this.allMode ? p.integration : this.provider?.integration,
+					label: p.name || p.id,
+				};
+			} else {
+				this.selectedIds.delete(p.id);
+				delete this.selectedInfo[p.id];
+			}
+		});
+		this.updateSelectionUI();
+	}
+
+	applyChecks() {
+		const rowmanager = this.table?.rowmanager;
+		if (!rowmanager) return;
+		this._applyingChecks = true;
+		rowmanager.checkMap = [];
+		this.allProducts.forEach((p, rowIndex) => {
+			if (p.id && this.selectedIds.has(p.id)) rowmanager.checkRow(rowIndex, true);
+		});
+		this._applyingChecks = false;
+
+		// Header checkbox mirrors the current page: checked when every row is
+		// selected, indeterminate when only some are (list-view behaviour).
+		const ids = this.allProducts.map((p) => p.id).filter(Boolean);
+		const selectedCount = ids.filter((id) => this.selectedIds.has(id)).length;
+		const $check = this.wrapper.find("#eps-product-list .dt-header .dt-cell--header-0 [type='checkbox']");
+		$check.prop("checked", ids.length > 0 && selectedCount === ids.length);
+		$check.prop("indeterminate", selectedCount > 0 && selectedCount < ids.length);
+	}
+
 	updateSelectionUI() {
 		if (!this.wrapper) return;
 		const count = this.selectedIds.size;
 		const $btn = this.wrapper.find("#eps-sync-selected");
-		$btn.prop("disabled", count === 0 || this.syncRunning || !this.provider?.enabled);
+		$btn.prop("disabled", count === 0 || this.syncRunning || !this.canSync());
 		$btn.text(count ? `${__("Sync Selected")} (${count})` : __("Sync Selected"));
-
-		const pageIds = this.allProducts.map((p) => p.id).filter(Boolean);
-		const allChecked = pageIds.length > 0 && pageIds.every((id) => this.selectedIds.has(id));
-		this.wrapper.find("#eps-select-all").prop("checked", allChecked);
 	}
 
 	variantCell(p) {
@@ -610,29 +765,70 @@ class ProductSyncPage {
 	// --------------------------------------------------------------- sync
 
 	async fetchStats() {
-		if (!this.provider) return;
-		try {
-			const { message } = await frappe.call({
-				method: `${API}.get_stats`,
-				args: { integration: this.provider.integration },
-			});
-			this.wrapper.find("#eps-stat-provider").text(message.provider_count ?? "-");
-			this.wrapper.find("#eps-stat-mapped").text(message.mapped ?? "-");
-			this.wrapper.find("#eps-stat-synced").text(message.synced ?? "-");
-		} catch (e) {
-			console.error("Failed to fetch sync stats", e);
+		const $provider = this.wrapper.find("#eps-stat-provider");
+		const $mapped = this.wrapper.find("#eps-stat-mapped");
+		const $synced = this.wrapper.find("#eps-stat-synced");
+		const $providerLabel = this.wrapper.find("#eps-stat-provider-label");
+
+		if (!this.canSync()) {
+			$provider.text("-");
+			$mapped.text("-");
+			$synced.text("-");
+			return;
 		}
+
+		if (!this.allMode) {
+			$providerLabel.text(__("Provider"));
+			try {
+				const { message } = await frappe.call({
+					method: `${API}.get_stats`,
+					args: { integration: this.provider.integration },
+				});
+				$provider.text(message.provider_count ?? "-");
+				$mapped.text(message.mapped ?? "-");
+				$synced.text(message.synced ?? "-");
+			} catch (e) {
+				console.error("Failed to fetch sync stats", e);
+			}
+			return;
+		}
+
+		// Combined view: per-integration provider counts don't add up to one
+		// number worth showing, so the first stat becomes the integrations
+		// count and the rest are summed across enabled integrations.
+		$providerLabel.text(__("Integrations"));
+		$provider.text(this.enabledProviders().length);
+		$mapped.text("-");
+		$synced.text("-");
+		const results = await Promise.allSettled(
+			this.enabledProviders().map((p) =>
+				frappe.call({ method: `${API}.get_stats`, args: { integration: p.integration } })
+			)
+		);
+		let mapped = 0;
+		let synced = 0;
+		let any = false;
+		for (const result of results) {
+			if (result.status !== "fulfilled") continue;
+			const stats = result.value.message || {};
+			mapped += stats.mapped || 0;
+			synced += stats.synced || 0;
+			any = true;
+		}
+		$mapped.text(any ? mapped : "-");
+		$synced.text(any ? synced : "-");
 	}
 
 	async syncOne($btn) {
-		if (!this.provider) return;
 		const productId = $btn.attr("data-id");
+		const integration = $btn.attr("data-integration") || this.provider?.integration;
+		if (!integration) return;
 		const wasSynced = $btn.hasClass("btn-resync-one");
 		$btn.prop("disabled", true).text(__("Syncing…"));
 		try {
 			const { message } = await frappe.call({
 				method: `${API}.sync_product`,
-				args: { integration: this.provider.integration, product_id: productId },
+				args: { integration, product_id: productId },
 			});
 			if (message && message.ok) {
 				frappe.show_alert({
@@ -664,27 +860,32 @@ class ProductSyncPage {
 	}
 
 	async startBulk() {
-		if (!this.provider || this.syncRunning) {
-			if (this.syncRunning) frappe.msgprint(__("A product sync is already running."));
+		if (!this.canSync()) return;
+		if (this.syncRunning) {
+			frappe.msgprint(__("A product sync is already running."));
 			return;
 		}
 
+		// In All mode every enabled integration gets its own bulk job.
+		const targets = this.allMode ? this.enabledProviders() : [this.provider];
+		const search = this.wrapper.find("#eps-search").val();
+		const syncFilter = this.wrapper.find("#eps-sync-filter").val();
+
 		this.showConsole();
+		let queued = false;
 		try {
-			const { message } = await frappe.call({
-				method: `${API}.sync_all`,
-				args: {
-					integration: this.provider.integration,
-					search: this.wrapper.find("#eps-search").val(),
-					sync_filter: this.wrapper.find("#eps-sync-filter").val(),
-				},
-			});
-			if (message?.status === "Busy") {
-				frappe.msgprint(message.message || __("A product sync is already running."));
-				this.toggleBulkButtons(false);
-				return;
+			for (const provider of targets) {
+				const { message } = await frappe.call({
+					method: `${API}.sync_all`,
+					args: { integration: provider.integration, search, sync_filter: syncFilter },
+				});
+				if (message?.status === "Busy") {
+					frappe.msgprint(message.message || __("A product sync is already running."));
+					continue;
+				}
+				queued = true;
 			}
-			this.toggleBulkButtons(true);
+			this.toggleBulkButtons(queued);
 		} catch (e) {
 			frappe.msgprint({ title: __("Sync failed"), message: __("Could not start the sync."), indicator: "red" });
 			this.toggleBulkButtons(false);
@@ -693,31 +894,44 @@ class ProductSyncPage {
 
 	async syncSelected() {
 		const ids = [...this.selectedIds];
-		if (!this.provider || !ids.length) return;
+		if (!this.canSync() || !ids.length) return;
 		if (this.syncRunning) {
 			frappe.msgprint(__("A product sync is already running."));
 			return;
 		}
 
-		// Pass display names so the progress trail shows product names, not ids.
-		const labels = {};
+		// Group the selection by integration. selectedInfo remembers each id's
+		// integration and display name, so rows selected on other pages of the
+		// combined view still sync correctly.
+		const byIntegration = {};
 		ids.forEach((id) => {
-			const product = this.allProducts.find((p) => p.id === id);
-			if (product) labels[id] = product.name || id;
+			const info = this.selectedInfo[id] || {};
+			const integration = info.integration || (this.allMode ? null : this.provider.integration);
+			if (!integration) return;
+			(byIntegration[integration] = byIntegration[integration] || []).push(id);
 		});
 
 		this.showConsole();
+		let queued = false;
 		try {
-			const { message } = await frappe.call({
-				method: `${API}.sync_selected`,
-				args: { integration: this.provider.integration, product_ids: ids, labels },
-			});
-			if (message?.status === "Busy") {
-				frappe.msgprint(message.message || __("A product sync is already running."));
-				this.toggleBulkButtons(false);
-				return;
+			for (const [integration, productIds] of Object.entries(byIntegration)) {
+				// Pass display names so the progress trail shows product names, not ids.
+				const labels = {};
+				productIds.forEach((id) => {
+					const label = this.selectedInfo[id]?.label;
+					if (label) labels[id] = label;
+				});
+				const { message } = await frappe.call({
+					method: `${API}.sync_selected`,
+					args: { integration, product_ids: productIds, labels },
+				});
+				if (message?.status === "Busy") {
+					frappe.msgprint(message.message || __("A product sync is already running."));
+					continue;
+				}
+				queued = true;
 			}
-			this.toggleBulkButtons(true);
+			this.toggleBulkButtons(queued);
 		} catch (e) {
 			frappe.msgprint({ title: __("Sync failed"), message: __("Could not start the sync."), indicator: "red" });
 			this.toggleBulkButtons(false);
@@ -725,18 +939,20 @@ class ProductSyncPage {
 	}
 
 	async checkSyncStatus() {
-		if (!this.provider) return;
-		try {
-			const { message } = await frappe.call({
-				method: `${API}.get_sync_status`,
-				args: { integration: this.provider.integration },
-			});
-			if (message?.running) {
-				this.toggleBulkButtons(true);
-				this.showConsole();
-			}
-		} catch (e) {
-			/* status is best-effort */
+		const targets = this.allMode
+			? this.enabledProviders()
+			: this.provider
+				? [this.provider]
+				: [];
+		if (!targets.length) return;
+		const results = await Promise.allSettled(
+			targets.map((p) =>
+				frappe.call({ method: `${API}.get_sync_status`, args: { integration: p.integration } })
+			)
+		);
+		if (results.some((r) => r.status === "fulfilled" && r.value.message?.running)) {
+			this.toggleBulkButtons(true);
+			this.showConsole();
 		}
 	}
 
@@ -753,6 +969,7 @@ class ProductSyncPage {
 		}
 		if (done) {
 			this.selectedIds.clear();
+			this.selectedInfo = {};
 			this.toggleBulkButtons(false);
 			this.fetchStats();
 			this.fetchProducts();
@@ -767,7 +984,7 @@ class ProductSyncPage {
 	toggleBulkButtons(running) {
 		this.syncRunning = running;
 		const $btn = this.wrapper.find("#eps-sync-all");
-		$btn.prop("disabled", running || !this.provider?.enabled);
+		$btn.prop("disabled", running || !this.canSync());
 		$btn.text(running ? __("Syncing...") : __("Sync All Items"));
 		this.updateSelectionUI();
 	}
