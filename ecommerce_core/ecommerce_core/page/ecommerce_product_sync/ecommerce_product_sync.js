@@ -61,41 +61,6 @@ class ProductSyncPage {
 				.eps-page-host-wrap { display: flex; flex-direction: column; overflow: visible; }
 				.eps-page-host { display: flex; flex-direction: column; }
 
-				/* ---- Integration bar ---- */
-				.eps-provider-bar {
-					display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
-					margin-bottom: 12px; padding: 10px 14px;
-					background-color: var(--card-bg);
-					border: 1px solid var(--border-color);
-					border-radius: 8px;
-				}
-				.eps-provider-bar .eps-provider-label {
-					flex: 0 0 auto; margin: 0; font-weight: 500;
-					color: var(--text-muted); white-space: nowrap;
-				}
-				/* Frappe sets .form-control to width:100%, which broke the row */
-				.eps-provider-bar select.form-control {
-					flex: 0 0 auto; width: 260px; max-width: 100%; height: 28px;
-				}
-				.eps-provider-bar .eps-provider-state {
-					flex: 0 0 auto; display: inline-flex; align-items: center;
-				}
-				.eps-provider-bar #eps-settings-link {
-					margin-left: auto; flex: 0 0 auto;
-					display: inline-flex; align-items: center; gap: 4px;
-					padding: 4px 10px; border-radius: 6px;
-					border: 1px solid var(--border-color);
-					color: var(--text-color); text-decoration: none; white-space: nowrap;
-					transition: background-color 0.15s;
-				}
-				.eps-provider-bar #eps-settings-link:hover {
-					background-color: var(--control-bg, var(--bg-color));
-				}
-				@media (max-width: 576px) {
-					.eps-provider-bar select.form-control { flex: 1 1 100%; width: 100%; }
-					.eps-provider-bar #eps-settings-link { margin-left: 0; }
-				}
-
 				/* ---- Products grid ---- */
 				.eps-page .row.eps-grid { display: flex; margin-left: 0; margin-right: 0; }
 				.eps-page .row.eps-grid > [class*="col-"] { display: flex; flex-direction: column; min-height: 0; }
@@ -104,6 +69,23 @@ class ProductSyncPage {
 				.eps-page .eps-list-footer { flex: 0 0 auto; }
 				.eps-page .eps-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 				.eps-page .eps-toolbar .form-control { height: 28px; min-height: 28px; }
+				/* Frappe sets .form-control to width:100%, so fix the filter widths */
+				.eps-toolbar select.form-control { width: 200px; }
+				.eps-toolbar #eps-sync-filter { width: 130px; }
+				.eps-toolbar .eps-provider-state { display: inline-flex; align-items: center; }
+				.eps-toolbar #eps-settings-link {
+					display: inline-flex; align-items: center; gap: 4px;
+					padding: 4px 10px; border-radius: 6px;
+					border: 1px solid var(--border-color);
+					color: var(--text-color); text-decoration: none; white-space: nowrap;
+					transition: background-color 0.15s;
+				}
+				.eps-toolbar #eps-settings-link:hover {
+					background-color: var(--control-bg, var(--bg-color));
+				}
+				@media (max-width: 576px) {
+					.eps-toolbar select.form-control { width: 100%; }
+				}
 				.eps-page #eps-product-list { width: 100%; overflow-x: auto; }
 				.eps-page #eps-product-list .dt-cell__content {
 					align-items: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -160,13 +142,6 @@ class ProductSyncPage {
 				.eps-variant-node-title { font-size: 13px; font-weight: 500; }
 			</style>
 			<div class="eps-page">
-				<div class="eps-provider-bar">
-					<label class="eps-provider-label" for="eps-provider-select">${__("Integration")}</label>
-					<select class="form-control form-control-sm" id="eps-provider-select"></select>
-					<span class="eps-provider-state" id="eps-provider-state"></span>
-					<a id="eps-settings-link" class="small" style="display: none;" title="${__("Open integration settings")}"></a>
-				</div>
-
 				<div class="eps-banner" id="eps-banner"></div>
 
 				<div class="row eps-grid">
@@ -175,6 +150,9 @@ class ProductSyncPage {
 							<div class="d-flex justify-content-between align-items-center border-bottom pb-2 mb-2 flex-wrap eps-products-card-header" style="gap: 8px;">
 								<h5 class="mb-0" id="eps-list-title">${__("Products")}</h5>
 								<div class="eps-toolbar">
+									<select class="form-control form-control-sm" id="eps-provider-select"></select>
+									<span class="eps-provider-state" id="eps-provider-state"></span>
+									<a id="eps-settings-link" class="small" style="display: none;" title="${__("Open integration settings")}"></a>
 									<input type="text" class="form-control form-control-sm" id="eps-search"
 										placeholder="${__("Search product / SKU / ID…")}" style="width: 200px;" autocomplete="off">
 									<select class="form-control form-control-sm" id="eps-sync-filter" style="width: 150px;">
@@ -215,7 +193,7 @@ class ProductSyncPage {
 								${__("Sync All Items")}
 							</button>
 							<div class="eps-stats">
-								<div><h3 class="mb-0" id="eps-stat-provider">-</h3><p class="text-muted small" id="eps-stat-provider-label">${__("Provider")}</p></div>
+								<div><h3 class="mb-0" id="eps-stat-provider">-</h3><p class="text-muted small" id="eps-stat-provider-label">${__("Total Products")}</p></div>
 								<div><h3 class="mb-0" id="eps-stat-mapped">-</h3><p class="text-muted small">${__("Mapped")}</p></div>
 								<div><h3 class="mb-0" id="eps-stat-synced">-</h3><p class="text-muted small">${__("Synced")}</p></div>
 							</div>
@@ -778,7 +756,7 @@ class ProductSyncPage {
 		}
 
 		if (!this.allMode) {
-			$providerLabel.text(__("Provider"));
+			$providerLabel.text(__("Total Products"));
 			try {
 				const { message } = await frappe.call({
 					method: `${API}.get_stats`,
