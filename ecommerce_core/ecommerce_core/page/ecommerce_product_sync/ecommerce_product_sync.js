@@ -629,9 +629,13 @@ class ProductSyncPage {
 		const rowmanager = this.table?.rowmanager;
 		if (!rowmanager) return;
 		this._applyingChecks = true;
+		// DataTable.refresh() replays the previous checkMap onto the new rows
+		// (restoreState -> highlightCheckedRows), so clearing the map alone
+		// leaves stale checkboxes on shifted rows. Set every row's checkbox
+		// explicitly, unchecking as well as checking.
 		rowmanager.checkMap = [];
 		this.allProducts.forEach((p, rowIndex) => {
-			if (p.id && this.selectedIds.has(p.id)) rowmanager.checkRow(rowIndex, true);
+			rowmanager.checkRow(rowIndex, !!(p.id && this.selectedIds.has(p.id)));
 		});
 		this._applyingChecks = false;
 
@@ -948,6 +952,10 @@ class ProductSyncPage {
 		if (done) {
 			this.selectedIds.clear();
 			this.selectedInfo = {};
+			// Rows may drop out of the list (e.g. "Not Synced" filter), and
+			// DataTable keeps checks by row position, so rebuild the table
+			// instead of refreshing it in place to avoid stale checkboxes.
+			this.destroyTable();
 			this.toggleBulkButtons(false);
 			this.fetchStats();
 			this.fetchProducts();
