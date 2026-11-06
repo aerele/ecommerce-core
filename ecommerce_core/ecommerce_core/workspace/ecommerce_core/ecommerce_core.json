@@ -58,8 +58,8 @@
   {
    "color": "Blue",
    "label": "Product Sync",
-   "link_to": "ecommerce-product-sync",
-   "type": "Page"
+   "link_to": "/ecommerce-core/product-sync",
+   "type": "URL"
   }
  ],
  "standard": 1,

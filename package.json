@@ -1,0 +1,9 @@
+{
+  "private": true,
+  "name": "ecommerce_core",
+  "scripts": {
+    "postinstall": "cd frontend && npm install --no-audit --no-fund",
+    "dev": "cd frontend && npm run dev",
+    "build": "cd frontend && npm run build"
+  }
+}
