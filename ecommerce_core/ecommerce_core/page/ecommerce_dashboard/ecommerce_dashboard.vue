@@ -30,7 +30,7 @@ if (
 
 const API = "ecommerce_core.dashboard.api";
 const REFRESH_SECONDS = 30;
-const PLATFORM_COLORS = ["bg-violet-500", "bg-emerald-500", "bg-sky-500", "bg-pink-500"];
+const PLATFORM_COLORS = ["bg-violet-500", "bg-green-500", "bg-cyan-500", "bg-pink-500"];
 
 const SECTIONS = {
 	orders: {
@@ -398,8 +398,8 @@ const ITEMS_COLUMNS = [
 	{ key: "item", label: "Item", kind: "item" },
 	{ key: "platform", label: "Platform", kind: "platform" },
 	{ key: "sku", label: "SKU", kind: "sku" },
-	{ key: "actual", label: "On hand", kind: "qty" },
-	{ key: "reserved", label: "Reserved for orders", kind: "qty" },
+	{ key: "actual", label: "On hand", kind: "qty", tone: "text-blue-700" },
+	{ key: "reserved", label: "Reserved for orders", kind: "qty", tone: "text-orange-700" },
 	{ key: "available", label: "Available to sell", kind: "qty" },
 	{ key: "stock", label: "Inventory status", kind: "stock" },
 	{ key: "synced", label: "Last inventory sync", kind: "synced" },
@@ -549,12 +549,12 @@ const STOCK_LABELS = {
 	na: "Inventory not tracked",
 };
 const STOCK_TEXT = {
-	in: "text-emerald-700",
+	in: "text-green-700",
 	low: "text-amber-700",
 	out: "text-red-700",
 	na: "text-ink-gray-5",
 };
-const STOCK_BAR = { in: "bg-emerald-500", low: "bg-amber-500", out: "bg-red-500" };
+const STOCK_BAR = { in: "bg-green-500", low: "bg-amber-500", out: "bg-red-500" };
 
 function formLink(doctype, name) {
 	const routes = {
@@ -669,7 +669,9 @@ function pushStock(name) {
 					class="flex min-h-32 min-w-0 flex-col gap-2 rounded-xl border border-outline-gray-2 bg-surface-white p-5 text-left transition hover:border-ink-gray-4"
 					@click="tileClick(tile)"
 				>
-					<span class="text-sm font-semibold text-ink-gray-6">{{ tile.label }}</span>
+					<span class="text-lg font-bold tracking-wide text-ink-gray-7 uppercase">{{
+						tile.label
+					}}</span>
 					<span
 						class="text-3xl font-extrabold tracking-tight"
 						:class="{
@@ -900,7 +902,7 @@ function pushStock(name) {
 												'bg-amber-500':
 													row.indicator === 'orange' ||
 													row.indicator === 'yellow',
-												'bg-emerald-500': row.indicator === 'green',
+												'bg-green-500': row.indicator === 'green',
 												'bg-blue-500': row.indicator === 'blue',
 												'bg-gray-400': ![
 													'red',
@@ -964,11 +966,11 @@ function pushStock(name) {
 									</a>
 									<span
 										v-else-if="col.kind === 'qty'"
-										class="block text-right font-medium"
+										class="block text-right font-bold"
 										:class="
 											col.key === 'available'
 												? STOCK_TEXT[row.stock_status]
-												: ''
+												: col.tone || ''
 										"
 									>
 										{{ formatQty(row[col.key]) }}
@@ -1032,7 +1034,7 @@ function pushStock(name) {
 										v-else-if="col.kind === 'log-status'"
 										class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium whitespace-nowrap"
 										:class="{
-											'bg-emerald-50 text-emerald-700':
+											'bg-green-50 text-green-700':
 												LOG_STATUS_THEMES[row.status] === 'green',
 											'bg-red-50 text-red-700':
 												LOG_STATUS_THEMES[row.status] === 'red',
@@ -1063,7 +1065,7 @@ function pushStock(name) {
 					</div>
 					<p
 						v-if="key === 'items' && pushedMessage"
-						class="px-4 py-2 text-xs text-emerald-700"
+						class="px-4 py-2 text-xs text-green-700"
 					>
 						{{ pushedMessage }}
 					</p>
