@@ -107,6 +107,7 @@ const countdown = ref(REFRESH_SECONDS);
 const lastRefresh = ref(null);
 const pushingItem = ref(null);
 const pushedMessage = ref("");
+const pushError = ref("");
 const searchTimers = {};
 
 // ----- resources -----
@@ -125,10 +126,20 @@ const pushStockRes = createResource({
 	resourceFetcher: frappeRequest,
 	onSuccess: (message) => {
 		pushedMessage.value = message || "Stock push queued";
+		pushError.value = "";
 		loadSection("items");
 	},
-	onError: () => {
+	onError: (error) => {
 		pushedMessage.value = "";
+		let candidate = error?.messages?.[0] || error?.message || error;
+		if (typeof candidate === "string" && candidate.startsWith("{")) {
+			try {
+				candidate = JSON.parse(candidate).message || candidate;
+			} catch {
+				/* keep the raw string */
+			}
+		}
+		pushError.value = candidate || "Stock push failed";
 	},
 });
 
@@ -603,6 +614,7 @@ function stockBarWidth(row) {
 function pushStock(name) {
 	pushingItem.value = name;
 	pushedMessage.value = "";
+	pushError.value = "";
 	pushStockRes.submit({ ecommerce_item: name }).finally(() => {
 		pushingItem.value = null;
 	});
@@ -1068,6 +1080,12 @@ function pushStock(name) {
 						class="px-4 py-2 text-xs text-green-700"
 					>
 						{{ pushedMessage }}
+					</p>
+					<p
+						v-if="key === 'items' && pushError"
+						class="px-4 py-2 text-xs font-semibold text-red-700"
+					>
+						{{ pushError }}
 					</p>
 				</div>
 
