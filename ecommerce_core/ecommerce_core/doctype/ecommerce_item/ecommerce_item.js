@@ -2,6 +2,6 @@
 // For license information, please see LICENSE
 
 frappe.ui.form.on("Ecommerce Item", {
-  // refresh: function(frm) {
-  // }
+	// refresh: function(frm) {
+	// }
 });
