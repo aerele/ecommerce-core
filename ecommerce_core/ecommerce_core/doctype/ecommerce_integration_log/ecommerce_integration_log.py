@@ -78,6 +78,10 @@ def create_log(
 
 	frappe.db.commit()
 
+	from ecommerce_core.dashboard.queries import invalidate_dashboard_cache
+
+	invalidate_dashboard_cache()
+
 	return log
 
 
