@@ -631,23 +631,6 @@ def test_inventory_sync():
     assert inventory[0].actual_qty >= 0
 ```
 
-## Shared Desk Pages
-
-Ecommerce Core ships two provider-neutral Desk pages, both built as Frappe UI pages
-(Vue islands) so they render inside the desk shell with the workspace sidebar, desk theme
-and desk realtime:
-
-| Page | Route | Shows | Connector contract |
-| --- | --- | --- | --- |
-| Ecommerce Dashboard (`ecommerce-dashboard`) | `/app/ecommerce-dashboard` | Orders, pending payments, items & inventory, sync logs across every connector | `ecommerce_dashboard_providers` hook + `ecommerce_core.dashboard.adapter.DashboardAdapter` (see `docs/dashboard.md`) |
-| Ecommerce Product Import (`ecommerce-product-import`) | `/app/ecommerce-product-import` | Each connector's remote catalog with generic sync state, single/selected/bulk sync with realtime progress | `ecommerce_product_import_providers` hook + `ecommerce_core.product_import.adapter.ProductImportAdapter` (see `docs/product_import_adapter.md`) |
-
-Both pages read only whitelisted `ecommerce_core.*.api` methods. Their loading rules are
-shared (`ecommerce_core.providers.registry`): hook entries are validated the same way, one
-broken adapter is skipped and reported in the page's notice banner instead of breaking the
-page. The shared frontend pieces they both use live in `ecommerce_core/ui/` — see
-`docs/frontend_islands.md` for the island conventions any new shared page must follow.
-
 ## Reference Documentation
 
 - **API Reference**: Detailed API documentation for all controllers and utilities

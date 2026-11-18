@@ -107,12 +107,20 @@ const searchTimers = {};
 
 // ----- resources -----
 
-const summaryRes = createResource({ url: `${API}.get_summary`, resourceFetcher: frappeRequest });
+const summaryRes = createResource({
+	url: `${API}.get_summary`,
+	method: "GET",
+	resourceFetcher: frappeRequest,
+});
 
 const sectionRes = Object.fromEntries(
 	Object.keys(SECTIONS).map((key) => [
 		key,
-		createResource({ url: `${API}.get_section`, resourceFetcher: frappeRequest }),
+		createResource({
+			url: `${API}.get_section`,
+			method: "GET",
+			resourceFetcher: frappeRequest,
+		}),
 	]),
 );
 

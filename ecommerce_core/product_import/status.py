@@ -1,14 +1,7 @@
 # Copyright (c) 2026, Aerele Technologies and contributors
 # For license information, please see license.txt
 
-"""Generic sync-status enrichment and statistics for the Product Sync page.
-
-Sync state is derived entirely from Ecommerce Core data (the ``Ecommerce Item``
-mapping joined against ``Item``), so every provider gets identical semantics:
-
-- ``synced``   — a mapping exists and the mapped ERPNext Item exists
-- ``unsynced`` — no usable mapping (none, or the mapped ERPNext Item is gone)
-"""
+"""Generic sync-status enrichment and statistics for the Product Sync page."""
 
 from __future__ import annotations
 
@@ -91,13 +84,7 @@ def list_mapped_products(
 	search: str | None = None,
 	synced_only: bool = False,
 ) -> dict:
-	"""Product listing built from Ecommerce Item mappings (no remote call).
-
-	Used when a provider adapter does not implement ``get_products``, and for the
-	"synced" filter, which Ecommerce Core can answer entirely from its own tables.
-	``synced_only`` keeps only mappings whose ERPNext Item still exists. Cursors are
-	opaque ``o:<offset>`` tokens, matching the adapter contract's cursor semantics.
-	"""
+	"""Product listing built from Ecommerce Item mappings (no remote call)."""
 	limit = cint(limit) or 20
 	offset = _decode_offset_cursor(cursor)
 
@@ -137,7 +124,7 @@ def list_mapped_products(
 	)
 	item_names = {item.name: item.item_name for item in items}
 
-	# Variants share integration_item_code; list their SKUs for the row's variant popover.
+	# Variants share integration_item_code; list their SKUs for the popover.
 	variant_rows = frappe.get_all(
 		"Ecommerce Item",
 		filters={

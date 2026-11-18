@@ -23,11 +23,7 @@ def integration_log_wrapper(integration: str):
 
 
 def make_scheduler_error_logger(integration: str):
-	"""Return a decorator that logs unhandled scheduled job errors.
-
-	This preserves the existing provider behavior: exceptions are recorded and
-	not re-raised, so scheduler jobs do not fail noisily after logging.
-	"""
+	"""Return a decorator that logs unhandled scheduled job errors."""
 
 	log = integration_log_wrapper(integration)
 

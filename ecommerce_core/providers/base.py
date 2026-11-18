@@ -1,13 +1,7 @@
 # Copyright (c) 2026, Aerele Technologies and contributors
 # For license information, please see license.txt
 
-"""Single adapter base shared by every Ecommerce Core connector contract.
-
-A connector exposes one adapter class per feature (dashboard, product import),
-but all of them share this base: ``is_enabled`` plus ``implements`` /
-``overrides`` for detecting optional methods, so the registries and the pages
-treat every adapter the same way.
-"""
+"""Single adapter base shared by every Ecommerce Core connector contract."""
 
 from __future__ import annotations
 
@@ -15,7 +9,7 @@ from abc import ABC, abstractmethod
 
 
 class BaseProviderAdapter(ABC):
-	#: Hook entry this adapter was registered with; set by the registry after instantiation.
+	#: Hook entry this adapter was registered with.
 	provider: dict
 
 	@abstractmethod
@@ -23,11 +17,7 @@ class BaseProviderAdapter(ABC):
 		"""Whether the connector is configured and switched on."""
 
 	def implements(self, method: str) -> bool:
-		"""True when the adapter overrides an optional method of its contract.
-
-		Locates the nearest ``__contract__`` class defining ``method`` and compares
-		implementations, so ABC stubs never count as "implemented".
-		"""
+		"""True when the adapter overrides an optional method of its contract."""
 		cls = type(self)
 		contract = next(
 			(c for c in cls.__mro__ if c.__dict__.get("__contract__") and method in vars(c)), None

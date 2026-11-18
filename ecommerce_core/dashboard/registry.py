@@ -1,11 +1,4 @@
-"""Discovers connectors registered through the ``ecommerce_dashboard_providers`` hook.
-
-Loading rules (validation, Module Def check, broken-adapter isolation, request
-memoization) live in ``ecommerce_core.providers.registry``; this module maps
-the results onto the dashboard's ``Provider`` objects and calls adapters
-through :func:`call_adapter`, which turns one failing widget into a reported
-problem instead of a broken page.
-"""
+"""Discovers connectors registered through the 'ecommerce_dashboard_providers' hook."""
 
 import hashlib
 from dataclasses import dataclass, field
@@ -92,7 +85,7 @@ def load_registry() -> Registry:
 		try:
 			provider.enabled = bool(adapter.is_enabled())
 		except Exception as e:
-			provider.problem = _("{0} adapter skipped: {1}").format(provider.label, e)
+			provider.problem = _("{0} adapter skipped: {1}").format(provider.label, str(e))
 			frappe.log_error(title=_("Ecommerce Dashboard adapter failed"))
 
 	return registry
@@ -102,11 +95,7 @@ ERROR_LOG_THROTTLE_SECONDS = 300
 
 
 def call_adapter(provider: Provider, method: str, problems: list[str], default, **kwargs):
-	"""Call an optional adapter method; failures are logged and reported instead of raised.
-
-	The client only sees a generic message (no raw exception text), and the Error Log entry
-	is throttled per provider/method so a failing provider cannot flood the table.
-	"""
+	"""Call an optional adapter method; failures are logged and reported instead of raised."""
 	try:
 		return getattr(provider.adapter, method)(**kwargs)
 	except Exception as exc:

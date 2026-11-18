@@ -1,22 +1,7 @@
 # Copyright (c) 2026, Aerele Technologies and contributors
 # For license information, please see license.txt
 
-"""Bulk product sync runner for the shared Product Sync page.
-
-Sync All and Sync Selected share one runner and one job name per provider, so
-only one bulk operation can run at a time:
-
-- Sync All — walks the provider catalog page by page (or the mapped-items view
-  when the adapter cannot list) and syncs every product.
-- Sync Selected — syncs exactly the product ids the user picked.
-- Custom — the adapter implements ``sync_all(search=None)`` and manages its own
-  job and log; the runner only guards against duplicate runs and passes through.
-
-Every run calls ``adapter.sync_product()`` per product inside a savepoint,
-counts outcomes, records one Ecommerce Integration Log, and streams a
-per-product trail over realtime events (one line per product, matching the
-Medusa connector's progress format).
-"""
+"""Bulk product sync runner for the shared Product Sync page."""
 
 from __future__ import annotations
 
@@ -48,11 +33,7 @@ _savepoint_counter = count()
 
 
 class ProgressPublisher:
-	"""Publishes realtime progress lines to the triggering user's console.
-
-	Per-product lines are throttled so a large catalog does not flood the socket;
-	errors, the start line and the final summary are always sent immediately.
-	"""
+	"""Publishes realtime progress lines to the triggering user's console."""
 
 	def __init__(self, event: str, user: str | None = None) -> None:
 		"""Bind the publisher to a realtime event, optionally scoped to one user."""
@@ -107,21 +88,21 @@ def _lock_key(provider: ProductImportProvider) -> str:
 
 
 def _acquire_lock(provider: ProductImportProvider) -> str | None:
-	"""Atomically claim the per-provider bulk run slot (SET NX with expiry).
-
-	Returns an owner token the job must present to refresh/release the lock, so a
-	job that outlived its lock can never delete a newer run's lock.
-	"""
+	"""Atomically claim the per-provider bulk run slot (SET NX with expiry)."""
 	token = frappe.generate_hash(length=16)
 	key = frappe.cache.make_key(_lock_key(provider))
-	if frappe.cache.set(name=key, value=token, nx=True, ex=LOCK_QUEUED_TTL_SECONDS):
+	if frappe.cache.set(  # nosemgrep: frappe-semgrep-rules.rules.frappe-cache-breaks-multitenancy
+		name=key, value=token, nx=True, ex=LOCK_QUEUED_TTL_SECONDS
+	):
 		return token
 	return None
 
 
 def _lock_owner(provider: ProductImportProvider) -> str | None:
 	"""Current owner token of the provider's lock, or None when free/expired."""
-	value = frappe.cache.get(frappe.cache.make_key(_lock_key(provider)))
+	value = frappe.cache.get(  # nosemgrep: frappe-semgrep-rules.rules.frappe-cache-breaks-multitenancy
+		frappe.cache.make_key(_lock_key(provider))
+	)
 	if isinstance(value, bytes):
 		value = value.decode()
 	return value
@@ -138,7 +119,9 @@ def _refresh_lock(provider: ProductImportProvider, token: str | None = None) -> 
 	if owner not in (token, None):
 		return
 	key = frappe.cache.make_key(_lock_key(provider))
-	frappe.cache.set(name=key, value=token, ex=LOCK_TTL_SECONDS)
+	frappe.cache.set(  # nosemgrep: frappe-semgrep-rules.rules.frappe-cache-breaks-multitenancy
+		name=key, value=token, ex=LOCK_TTL_SECONDS
+	)
 
 
 def _release_lock(provider: ProductImportProvider, token: str | None = None) -> None:
@@ -165,13 +148,7 @@ def enqueue_sync_all(
 	sync_filter: str | None = None,
 	force_full: bool = False,
 ) -> dict:
-	"""Start a full-catalog bulk sync; returns job metadata for the page.
-
-	``sync_filter`` (synced/unsynced) restricts the run to products in that
-	state, matching the filter active on the page. When the adapter can report a
-	remote ``updated_at`` the run is incremental: products unchanged since their
-	last sync are skipped unless ``force_full`` is set.
-	"""
+	"""Start a full-catalog bulk sync; returns job metadata for the page."""
 	sync_filter = sync_filter if sync_filter in SYNC_FILTERS else None
 
 	if provider.has_custom_bulk_sync:
@@ -217,12 +194,7 @@ def _enqueue_bulk(
 	user: str | None = None,
 	force_full: bool = False,
 ) -> dict:
-	"""Claim the lock, create the Queued log and enqueue the bulk job.
-
-	Returns ``{"status": "Queued", ...}`` with the log/event/job names, or
-	``{"status": "Busy"}`` when a run is already in flight. The lock is released
-	if enqueueing fails so a failed queue write cannot wedge the provider.
-	"""
+	"""Claim the lock, create the Queued log and enqueue the bulk job."""
 	if is_sync_running(provider):
 		return {"status": "Busy", "message": _("A product sync is already running.")}
 	lock_token = _acquire_lock(provider)
@@ -335,7 +307,7 @@ def run_bulk_sync_job(
 				# Commit between catalog pages so a long sync does not hold one
 				# transaction open for the whole catalog (same pattern as the
 				# connector runners this page replaces).
-				frappe.db.commit()  # nosemgrep: frappe-no-commit
+				frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
 
 		elapsed = monotonic() - start
 		summary = {

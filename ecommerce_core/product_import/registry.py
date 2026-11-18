@@ -1,44 +1,7 @@
 # Copyright (c) 2026, Aerele Technologies and contributors
 # For license information, please see license.txt
 
-"""Provider registry for the shared Product Sync page.
-
-Connector apps register a provider adapter through the
-``ecommerce_product_import_providers`` hook::
-
-        # <provider_connector>/hooks.py
-        ecommerce_product_import_providers = [
-            {
-                "integration": "Medusa Connector",  # Ecommerce Item.integration value
-                "label": "Medusa",
-                "settings_doctype": "Medusa Settings",
-                "adapter": "medusa_connector.product_import.MedusaProductImportAdapter",
-            }
-        ]
-
-Loading rules (validation, Module Def check, broken-adapter isolation,
-request memoization) live in ``ecommerce_core.providers.registry``. The
-adapter contract itself is documented in ``ecommerce_core.product_import.adapter``
-and ``docs/product_import_adapter.md``:
-
-	Required:
-		is_enabled() -> bool
-		sync_product(product_id) -> dict  # {"action": "created"|"updated"|"skipped", ...}
-
-	Optional:
-		get_products(limit, cursor=None, search=None) -> dict
-			# {"products": [{id, name, sku, variants?, ...}], "total": int|None,
-			#  "next_cursor": str|None}
-			# When absent, the page falls back to the generic mapped-items view.
-		get_provider_count() -> int
-		sync_all(search=None) -> dict  # custom bulk job; returns {"status": "Queued", ...}
-		get_sync_status() -> dict  # {"running": bool}
-
-Plain duck-typed classes are accepted; subclassing ``ProductImportAdapter`` just
-adds the capability flags. The registry never raises for one broken provider —
-it logs and skips it so a single misconfigured connector cannot take the page
-down.
-"""
+"""Provider registry for the shared Product Sync page."""
 
 from __future__ import annotations
 

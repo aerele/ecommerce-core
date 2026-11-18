@@ -1,7 +1,4 @@
-// ERPNext form routes resolve under /app inside the desk shell. Islands must
-// navigate with plain URLs (window.location, plain anchors) — never with a
-// router of their own, because the island contract gives each page one URL
-// and desk's own router owns the shell around it.
+// Islands navigate with plain URLs; desk's router owns the shell.
 
 /** Form route for a document, e.g. `formLink("Sales Order", "SO-0001")`. */
 export function formLink(doctype, name) {

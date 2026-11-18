@@ -1,25 +1,7 @@
 # Copyright (c) 2026, Aerele Technologies and contributors
 # For license information, please see license.txt
 
-"""Shared loader for connector provider registries.
-
-The Ecommerce Dashboard and the shared Product Sync page each discover
-connectors through their own hook (``ecommerce_dashboard_providers`` /
-``ecommerce_product_import_providers``), but the loading rules are one contract:
-
-- a hook entry is a dict carrying ``integration``, ``label`` and ``adapter``;
-- ``integration`` must equal an existing Module Def name (it doubles as the
-  ``Ecommerce Item.integration`` value), and an optional ``settings_doctype``
-  must exist;
-- ``adapter`` must resolve, instantiate, satisfy the registry's required
-  methods and, when given, subclass ``adapter_base``;
-- one broken entry never raises: it is logged, skipped and reported through
-  the returned ``reason`` so the page can show it in its notice banner;
-- results are memoized for the current request.
-
-Each feature's registry maps these results onto its own provider objects, so
-the public registry APIs connectors rely on do not change.
-"""
+"""Shared loader for connector provider registries."""
 
 from __future__ import annotations
 
@@ -55,11 +37,7 @@ def load_hook_providers(
 	adapter_base: type | None = None,
 	required_methods: tuple[str, ...] = (),
 ) -> list[LoadedProvider]:
-	"""Resolve every hook entry into a LoadedProvider, memoized per request.
-
-	Accepted entries carry their instantiated adapter; rejected ones carry a
-	human-readable ``reason`` (also logged) and ``adapter=None``.
-	"""
+	"""Resolve every hook entry into a LoadedProvider, memoized per request."""
 	cache_key = f"_ecommerce_providers_{hook_name}"
 	loaded = getattr(frappe.local, cache_key, None)
 	if loaded is not None:
@@ -93,12 +71,7 @@ def _load(hook_name: str, adapter_base: type | None, required_methods: tuple[str
 def _build(
 	entry, hook_name: str, adapter_base: type | None, required_methods: tuple[str, ...]
 ) -> LoadedProvider:
-	"""Validate one hook entry and instantiate its adapter.
-
-	Every failure mode (malformed entry, unknown Module Def/settings doctype,
-	unloadable adapter, wrong base class, missing required methods) becomes a
-	rejected LoadedProvider with a ``reason`` instead of an exception.
-	"""
+	"""Validate one hook entry and instantiate its adapter."""
 	if not isinstance(entry, dict):
 		return LoadedProvider(entry={}, reason=f"malformed hook entry (expected a dict): {entry}")
 

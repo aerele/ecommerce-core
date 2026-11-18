@@ -50,18 +50,22 @@ const FILTER_OPTIONS = [
 
 const providersResource = createResource({
 	url: `${API}.get_providers`,
+	method: "GET",
 	resourceFetcher: frappeRequest,
 });
 const diagnosticsResource = createResource({
 	url: `${API}.get_provider_diagnostics`,
+	method: "GET",
 	resourceFetcher: frappeRequest,
 });
 const statsResource = createResource({
 	url: `${API}.get_stats`,
+	method: "GET",
 	resourceFetcher: frappeRequest,
 });
 const syncStatusResource = createResource({
 	url: `${API}.get_sync_status`,
+	method: "GET",
 	resourceFetcher: frappeRequest,
 });
 const syncProductResource = createResource({
@@ -141,27 +145,22 @@ const pageLabel = computed(() => {
 		: `Page ${pageIndex.value + 1} (${start} – ${end})`;
 });
 
-// A status filter can scan many catalog pages without a match. Rather than showing an
-// empty page with a Next button, keep scanning (bounded) while the loader stays visible.
+// Keep scanning (bounded) while a status filter finds no matches on this page.
 const MAX_EMPTY_SCAN_HOPS = 5;
 async function fetchRows(hop = 0) {
 	listLoading.value = true;
 	listError.value = "";
 	try {
-		const response = await fetch(`/api/method/${API}.get_products`, {
-			method: "POST",
-			headers: {
-				Accept: "application/json",
-				"Content-Type": "application/json; charset=utf-8",
-				"X-Frappe-CSRF-Token": window.csrf_token,
-			},
-			body: JSON.stringify({
-				integration: integration.value,
-				limit: pageSize.value,
-				cursor: cursorStack.value[pageIndex.value],
-				search: search.value || null,
-				sync_filter: syncFilter.value || null,
-			}),
+		const params = new URLSearchParams({
+			integration: integration.value || "",
+			limit: pageSize.value,
+			cursor: cursorStack.value[pageIndex.value] || "",
+			search: search.value || "",
+			sync_filter: syncFilter.value || "",
+		});
+		const response = await fetch(`/api/method/${API}.get_products?${params}`, {
+			method: "GET",
+			headers: { Accept: "application/json" },
 		});
 		let body = null;
 		try {

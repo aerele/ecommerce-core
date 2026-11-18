@@ -1,12 +1,7 @@
 # Copyright (c) 2026, Aerele Technologies and contributors
 # For license information, please see license.txt
 
-"""Whitelisted API for the shared Product Sync Desk page.
-
-All endpoints are System Manager only. Integration names map to adapters
-exclusively through the server-side ``ecommerce_product_import_providers`` hook
-registry — no dotted paths are ever accepted from the client.
-"""
+"""Whitelisted API for the shared Product Sync Desk page."""
 
 from __future__ import annotations
 
@@ -38,21 +33,21 @@ from ecommerce_core.product_import.registry import (
 from ecommerce_core.utils.integration_log import create_integration_log
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET"])
 def get_providers() -> list[dict]:
 	"""Registered Product Sync providers for the page's provider selector."""
 	frappe.only_for("System Manager")
 	return [provider.as_dict() for provider in get_registered_providers()]
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET"])
 def get_provider_diagnostics() -> list[dict]:
 	"""Hook entries that were rejected at load time, with the reason."""
 	frappe.only_for("System Manager")
 	return get_rejected_providers()
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET"])
 def get_products(
 	integration: str | None = None,
 	limit: int = 20,
@@ -60,15 +55,7 @@ def get_products(
 	search: str | None = None,
 	sync_filter: str | None = None,
 ) -> dict:
-	"""One page of provider products, enriched with generic sync status.
-
-	A blank ``integration`` spans every enabled provider: rows are tagged with
-	``integration``/``provider_label`` and the cursor walks the registry in
-	order, so the UI can show one combined list.
-
-	``sync_filter`` (synced/unsynced) is applied after enrichment, so it
-	may shrink a page below ``limit``.
-	"""
+	"""One page of provider products, enriched with generic sync status."""
 	frappe.only_for("System Manager")
 	limit = cint(limit) or DEFAULT_PAGE_SIZE
 	limit = min(max(limit, 1), MAX_PAGE_SIZE)
@@ -88,15 +75,9 @@ def _provider_page(
 	search: str | None,
 	sync_filter: str | None,
 ) -> dict:
-	"""``limit`` enriched rows for one provider, spanning adapter pages as needed.
-
-	Adapters cap their own page window (e.g. Shopify's GraphQL query), so page
-	sizes beyond ``BULK_PAGE_SIZE`` are stitched from consecutive adapter calls;
-	the returned cursor points past the last consumed adapter page, keeping the
-	client's Prev/Next cursor history valid.
-	"""
+	"""'limit' enriched rows for one provider, spanning adapter pages as needed."""
 	filtered = sync_filter in SYNC_FILTERS
-	# "synced" is answered from Ecommerce Core's own tables: one SQL page, no remote scan.
+	# "synced" comes from local tables, no remote scan.
 	local_synced = sync_filter == "synced"
 	products: list[dict] = []
 	total = None
@@ -145,13 +126,7 @@ def _provider_page(
 def _merged_products_page(
 	limit: int, cursor: str | None, search: str | None, sync_filter: str | None
 ) -> dict:
-	"""One page stitched across all enabled providers, in registry order.
-
-	The cursor is an ``m:`` envelope holding the provider index plus that
-	provider's own cursor, so pagination resumes exactly across provider
-	boundaries. One unreachable connector is skipped and reported in
-	``errors`` instead of failing the whole combined page.
-	"""
+	"""One page stitched across all enabled providers, in registry order."""
 	providers = [p for p in get_registered_providers() if p.enabled]
 	if not providers:
 		return {"products": [], "total": 0, "next_cursor": None, "limit": limit, "errors": []}
@@ -254,13 +229,7 @@ def _short_error(e: Exception) -> str:
 def _filtered_provider_page(
 	provider: ProductImportProvider, limit: int, cursor: str | None, search: str | None, sync_filter: str
 ) -> dict:
-	"""Collect ``limit`` rows matching ``sync_filter`` across adapter pages.
-
-	Without this, status filters would only apply within a single provider page
-	and hide matches living on later pages. The returned cursor is an envelope
-	wrapping the adapter cursor plus how many matches were already returned from
-	that page, so pagination resumes exactly where the scan stopped.
-	"""
+	"""Collect 'limit' rows matching 'sync_filter' across adapter pages."""
 	adapter_cursor, skip = _decode_envelope(cursor)
 	collected: list[dict] = []
 	total = None
@@ -318,7 +287,7 @@ def _decode_envelope(cursor: str | None) -> tuple[str | None, int]:
 		return None, 0
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET"])
 def get_stats(integration: str) -> dict:
 	"""Generic sync statistics; provider count when the adapter can supply it."""
 	provider = _get_provider(integration)
@@ -374,11 +343,7 @@ def sync_all(
 	sync_filter: str | None = None,
 	force_full: bool | int | str = False,
 ) -> dict:
-	"""Queue a bulk product sync (generic runner or adapter-managed).
-
-	``sync_filter`` limits the run to products in that sync state. Adapters that report
-	a remote ``updated_at`` sync incrementally unless ``force_full`` is truthy.
-	"""
+	"""Queue a bulk product sync (generic runner or adapter-managed)."""
 	provider = _get_enabled_provider(integration)
 	return runner.enqueue_sync_all(
 		provider,
@@ -428,7 +393,7 @@ def _validate_labels(labels: str | dict | None, product_ids: list[str]) -> dict[
 	return {pid: names[pid] for pid in product_ids if pid in names}
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET"])
 def get_sync_status(integration: str) -> dict:
 	"""Running/enabled state and realtime event name for one provider's bulk sync."""
 	provider = _get_provider(integration)

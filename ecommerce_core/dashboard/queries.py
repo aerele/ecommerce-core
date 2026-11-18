@@ -1,8 +1,4 @@
-"""Reusable ERPNext queries for dashboard adapters.
-
-Most connectors tag their Sales Orders and Sales Invoices with a provider order-ID custom field;
-these helpers let an adapter feed the order and payment widgets by naming that field.
-"""
+"""Reusable ERPNext queries for dashboard adapters."""
 
 import hashlib
 
@@ -63,12 +59,7 @@ def _sales_order_query(
 	filter_fields: dict[str, str] | None = None,
 	filters: dict[str, str] | None = None,
 ):
-	"""Shared Sales Order query: only rows tagged with ``id_field``, filtered and searched.
-
-	Applies the status, selected ``filter_fields`` (skipping fields missing from the doctype)
-	and a LIKE search over id, order name and customer. Returns (DocType, query) so callers
-	can pick their own fields and aggregation.
-	"""
+	"""Shared Sales Order query: only rows tagged with 'id_field', filtered and searched."""
 	so = frappe.qb.DocType("Sales Order")
 	query = frappe.qb.from_(so).where(so[id_field].isnotnull() & (so[id_field] != ""))
 	if status:
@@ -92,16 +83,7 @@ def recent_sales_orders(
 	filter_fields: dict[str, str] | None = None,
 	filters: dict[str, str] | None = None,
 ) -> list[dict]:
-	"""Sales Orders tagged with ``id_field``, newest first, in the dashboard order-row shape.
-
-	``extra_fields`` are (fieldname, label) pairs read from the Sales Order and ``invoice_fields``
-	pairs read from its latest Sales Invoice. Non-empty values are returned on the row as
-	``details``: [{label, value}, ...] — connector facts shown under the order with the
-	connector's own (provider-neutral) labels.
-
-	``filter_fields`` maps a filter key to a Sales Order fieldname; the selected values arrive
-	in ``filters`` and become equality conditions.
-	"""
+	"""Sales Orders tagged with 'id_field', newest first, in the dashboard order-row shape."""
 	if not _has_field("Sales Order", id_field):
 		return []
 	extra_fields = _existing_fields("Sales Order", extra_fields)
@@ -163,12 +145,7 @@ def invoices_for_orders(id_field: str, order_ids: list[str]) -> dict[str, str]:
 
 
 def _latest_invoices(id_field: str, order_ids: list[str], extra_fields=()) -> dict[str, dict]:
-	"""Latest non-return, non-cancelled Sales Invoice per provider order ID.
-
-	Each value is {"name": invoice, "fields": {fieldname: value}} covering the requested
-	extra fields; fields missing from the doctype are dropped so uninstalled custom
-	fields degrade quietly.
-	"""
+	"""Latest non-return, non-cancelled Sales Invoice per provider order ID."""
 	if not order_ids or not _has_field("Sales Invoice", id_field):
 		return {}
 	extra_fields = [f for f in extra_fields if _has_field("Sales Invoice", f)]
@@ -181,7 +158,7 @@ def _latest_invoices(id_field: str, order_ids: list[str], extra_fields=()) -> di
 		.orderby(si.creation)
 		.run(as_dict=True)
 	)
-	# Rows come back oldest-first, so later invoices overwrite earlier ones per order.
+	# Oldest first, so the newest invoice wins.
 	return {r.order_id: {"name": r.name, "fields": {f: r.get(f) for f in extra_fields}} for r in rows}
 
 
@@ -205,11 +182,7 @@ def _row_details(order, extra_fields, invoice, invoice_fields) -> list[dict]:
 
 
 def _pending_invoice_query(id_field: str, cod_field: str | None, search: str | None, status: str | None):
-	"""Shared pending-payment query: submitted, non-return invoices with money outstanding.
-
-	COD is tracked via ``cod_field``; asking for the "COD Not Collected" status without one
-	returns (doctype, None) so callers know there is nothing to report.
-	"""
+	"""Shared pending-payment query: submitted, non-return invoices with money outstanding."""
 	si = frappe.qb.DocType("Sales Invoice")
 	query = frappe.qb.from_(si).where(
 		si[id_field].isnotnull()

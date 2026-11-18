@@ -12,9 +12,6 @@ from frappe.utils.nestedset import get_descendants_of
 
 from ecommerce_core.dashboard.queries import cache_key_for, like_pattern
 from ecommerce_core.dashboard.registry import Provider, Registry, call_adapter, load_registry
-from ecommerce_core.ecommerce_core.doctype.ecommerce_integration_log.ecommerce_integration_log import (
-	_retry_job,
-)
 
 MAX_PAGE_SIZE = 50
 MAX_MERGE_ROWS = 500
@@ -31,7 +28,7 @@ LOG_GROUPS = {
 STOCK_ORDER = {"out": 0, "low": 1, "in": 2, "na": 3}
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET"])
 def get_summary(integration: str | None = None) -> dict:
 	"""Provider tabs, stat tiles and adapter problems for the selected view."""
 	frappe.only_for("System Manager")
@@ -93,7 +90,7 @@ def get_summary(integration: str | None = None) -> dict:
 	}
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET"])
 def get_section(
 	section: str,
 	integration: str | None = None,
@@ -123,17 +120,6 @@ def get_section(
 
 
 @frappe.whitelist(methods=["POST"])
-def retry_log(name: str) -> dict:
-	"""Retry a failed log with the same idempotent path as the log form's Retry button."""
-	frappe.only_for("System Manager")
-	status = frappe.db.get_value("Ecommerce Integration Log", name, "status")
-	if status != "Error":
-		frappe.throw(_("Only logs in Error status can be retried."))
-	_retry_job(name)
-	return {"status": frappe.db.get_value("Ecommerce Integration Log", name, "status")}
-
-
-@frappe.whitelist(methods=["POST"])
 def push_stock(ecommerce_item: str) -> str:
 	"""Ask the item's connector to push its current stock."""
 	frappe.only_for("System Manager")
@@ -145,22 +131,6 @@ def push_stock(ecommerce_item: str) -> str:
 	if not provider or not provider.enabled or not provider.adapter.implements("push_inventory"):
 		frappe.throw(_("{0} does not support pushing stock from the dashboard.").format(integration))
 	return provider.adapter.push_inventory([ecommerce_item])
-
-
-@frappe.whitelist(methods=["POST"])
-def create_payment_link(sales_invoice: str) -> dict:
-	"""Create and submit a Payment Request for an outstanding Sales Invoice."""
-	frappe.only_for("System Manager")
-	frappe.has_permission("Payment Request", "create", throw=True)
-	from erpnext.accounts.doctype.payment_request.payment_request import make_payment_request
-
-	existing = _open_payment_requests([sales_invoice]).get(sales_invoice)
-	if existing:
-		return existing
-
-	pr = make_payment_request(dt="Sales Invoice", dn=sales_invoice, submit_doc=1, mute_email=1, return_doc=1)
-	name = pr.get("name")
-	return {"name": name, "url": frappe.db.get_value("Payment Request", name, "payment_url")}
 
 
 # ----- sections -----
@@ -221,11 +191,7 @@ def _created_key(value) -> str:
 
 
 def _orders_section(registry, integration, search, status, page, page_size, filters=None):
-	"""Merged recent-orders rows across providers, plus totals, problems, columns and filters.
-
-	Returns {"rows", "total", "problems", "unsupported", "filter_options", "columns"}; only
-	providers declaring every selected filter key contribute rows, so filtered totals stay consistent.
-	"""
+	"""Merged recent-orders rows across providers, plus totals, problems, columns and filters."""
 	problems = []
 	provider_filters = _provider_order_filters(registry, integration, problems)
 	active_integrations = [p.integration for p in registry.active(integration, "get_recent_orders")]
@@ -235,8 +201,7 @@ def _orders_section(registry, integration, search, status, page, page_size, filt
 
 	providers = registry.active(integration, "get_recent_orders")
 	if filters:
-		# Providers that don't declare the active keys can't apply them; querying them
-		# anyway would mix filtered and unfiltered rows, so they're left out.
+		# Only providers that understand the active filters can return rows for them.
 		declaring = {
 			p.integration for p, opts in provider_filters if set(filters) <= {o.get("key") for o in opts}
 		}
@@ -306,13 +271,7 @@ def _merged_filter_options(provider_filters) -> list[dict]:
 
 
 def _common_filter_options(provider_filters, active_integrations: list[str]) -> list[dict]:
-	"""Filter definitions shared by every active provider in scope.
-
-	Combined view: a filter only one connector understands would silently drop the
-	others' rows while selected, so only keys every active provider declares are
-	common. A single-provider scope (one connector's tab, or one connector
-	installed) keeps that provider's own filters.
-	"""
+	"""Filter definitions shared by every active provider in scope."""
 	if not active_integrations or len(active_integrations) == 1:
 		return _merged_filter_options(provider_filters)
 
@@ -339,13 +298,7 @@ def _merged_order_columns(provider_columns) -> list[dict]:
 
 
 def _common_order_columns(provider_columns, active_integrations: list[str]) -> list[dict]:
-	"""Extra order columns shared by every active provider in scope.
-
-	Combined view: columns only one connector fills would show a dash in every
-	other connector's rows, so only keys every active provider declares stay.
-	A single-provider scope (one connector's tab, or one connector installed)
-	keeps that provider's own columns.
-	"""
+	"""Extra order columns shared by every active provider in scope."""
 	if not active_integrations or len(active_integrations) == 1:
 		return _merged_order_columns(provider_columns)
 
@@ -429,11 +382,7 @@ def _logs_section(registry, integration, search, status, page, page_size):
 
 
 def _integrations_in_scope(registry: Registry, integration: str | None) -> list[str]:
-	"""Integrations the items view covers: the selected one, or every registered/mapped name.
-
-	Memoized on frappe.local per request, since a single registered connector can map
-	many Ecommerce Items.
-	"""
+	"""Integrations the items view covers: the selected one, or every registered/mapped name."""
 	if integration:
 		return [integration]
 	if (cached := getattr(frappe.local, "ecommerce_scope_integrations", None)) is not None:
@@ -625,23 +574,3 @@ def _unsupported(registry: Registry, integration: str | None, method: str) -> li
 		for p in registry.scoped(integration)
 		if p.enabled and p.adapter and not p.adapter.implements(method)
 	]
-
-
-def _open_payment_requests(invoices: list[str]) -> dict[str, dict]:
-	"""Latest open (submitted, unpaid) Payment Request per Sales Invoice."""
-	if not invoices:
-		return {}
-	pr = DocType("Payment Request")
-	rows = (
-		frappe.qb.from_(pr)
-		.select(pr.name, pr.reference_name, pr.payment_url)
-		.where(
-			(pr.reference_doctype == "Sales Invoice")
-			& pr.reference_name.isin(invoices)
-			& (pr.docstatus == 1)
-			& pr.status.notin(("Paid", "Cancelled"))
-		)
-		.orderby(pr.creation)
-		.run(as_dict=True)
-	)
-	return {r.reference_name: {"name": r.name, "url": r.payment_url} for r in rows}
