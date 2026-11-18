@@ -64,6 +64,44 @@ class TestEcommerceItem(IntegrationTestCase):
 		self.assertEqual(a.name, b.name)
 		self.assertEqual(a.item_code, b.item_code)
 
+	def test_same_sku_is_allowed_for_different_accounts(self):
+		self._create_doc_with_sku_for_account("one.myshopify.com", "P1", "_Test Item")
+		# the same SKU on another store maps to a different item
+		self._create_doc_with_sku_for_account("two.myshopify.com", "P2", "_Test Item 2")
+
+	def test_duplicate_sku_within_same_account(self):
+		self._create_doc_with_sku_for_account("one.myshopify.com", "P1", "_Test Item")
+		self.assertRaises(
+			frappe.DuplicateEntryError,
+			self._create_doc_with_sku_for_account,
+			"one.myshopify.com",
+			"P2",
+			"_Test Item 2",
+		)
+
+	def test_is_synced_with_account_filters(self):
+		self._create_doc_with_sku_for_account("one.myshopify.com", "P1", "_Test Item")
+
+		self.assertTrue(
+			ecommerce_item.is_synced(INTEGRATION, "P1", filters={"shopify_account": "one.myshopify.com"})
+		)
+		self.assertFalse(
+			ecommerce_item.is_synced(INTEGRATION, "P1", filters={"shopify_account": "two.myshopify.com"})
+		)
+
+	def test_get_erpnext_item_code_with_account_filters(self):
+		self._create_doc_with_sku_for_account("one.myshopify.com", "P1", "_Test Item")
+
+		item_code = ecommerce_item.get_erpnext_item_code(
+			INTEGRATION, "P1", filters={"shopify_account": "one.myshopify.com"}
+		)
+		self.assertEqual(item_code, "_Test Item")
+
+		item_code = ecommerce_item.get_erpnext_item_code(
+			INTEGRATION, "P1", filters={"shopify_account": "two.myshopify.com"}
+		)
+		self.assertEqual(item_code, None)
+
 	def test_get_erpnext_item_sku(self):
 		self._create_doc_with_sku()
 		a = ecommerce_item.get_erpnext_item(INTEGRATION, "T-SHIRT", sku="TEST_ITEM_1")
@@ -106,3 +144,15 @@ class TestEcommerceItem(IntegrationTestCase):
 				"sku": "TEST_ITEM_1",
 			}
 		).insert()
+
+	def _create_doc_with_sku_for_account(self, account, product_id, item_code):
+		frappe.get_doc(
+			{
+				"doctype": "Ecommerce Item",
+				"integration": INTEGRATION,
+				"integration_item_code": product_id,
+				"erpnext_item_code": item_code,
+				"sku": "SHARED-SKU",
+				"shopify_account": account,
+			}
+		).insert(ignore_links=True)
