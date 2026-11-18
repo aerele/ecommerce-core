@@ -608,10 +608,7 @@ function pushStock(name) {
 	<div class="h-full overflow-y-auto">
 		<div class="mx-auto flex max-w-10xl flex-col gap-5 p-5">
 			<!-- integration tabs -->
-			<nav
-				class="flex flex-wrap items-center gap-1 border-b border-outline-gray-2"
-				aria-label="Integrations"
-			>
+			<nav class="flex flex-wrap items-center gap-2" aria-label="Integrations">
 				<button
 					v-for="tab in [
 						{ integration: '', label: 'All Integrations', enabled: true },
@@ -619,26 +616,32 @@ function pushStock(name) {
 					]"
 					:key="tab.integration"
 					type="button"
-					class="-mb-px inline-flex items-center gap-2 border-b-2 px-3.5 py-2.5 text-sm font-semibold"
+					class="inline-flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-semibold transition"
 					:class="
 						integration === tab.integration
-							? 'border-ink-gray-9 text-ink-gray-9'
-							: 'border-transparent text-ink-gray-6 hover:text-ink-gray-8'
+							? 'border-gray-900 bg-gray-900 text-white shadow-sm'
+							: 'border-outline-gray-2 bg-surface-white text-ink-gray-6 hover:border-ink-gray-4 hover:text-ink-gray-8'
 					"
+					:aria-current="integration === tab.integration ? 'true' : 'false'"
 					@click="integration = tab.integration"
 				>
 					<span
 						class="h-2 w-2 rounded-full"
 						:class="
-							tab.integration && tab.enabled
-								? providerColor(tab.integration)
-								: 'bg-gray-400'
+							integration === tab.integration
+								? 'bg-white'
+								: tab.integration && tab.enabled
+								  ? providerColor(tab.integration)
+								  : 'bg-gray-400'
 						"
 					></span>
 					{{ tab.label }}
 					<span
 						v-if="tab.integration && !tab.enabled"
-						class="text-xs font-medium text-ink-gray-5"
+						class="text-xs font-medium"
+						:class="
+							integration === tab.integration ? 'text-gray-300' : 'text-ink-gray-5'
+						"
 					>
 						off
 					</span>

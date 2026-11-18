@@ -57,3 +57,53 @@ class TestDashboardAPI(IntegrationTestCase):
 	def test_unknown_section_is_rejected(self):
 		with self.assertRaises(frappe.exceptions.ValidationError):
 			api.get_section("no-such-section")
+
+	def test_combined_view_keeps_only_filters_common_to_every_provider(self):
+		from ecommerce_core.dashboard.registry import Provider
+
+		unicommerce = Provider(integration="unicommerce", label="Unicommerce", settings_doctype=None)
+		shopify = Provider(integration="shopify", label="Shopify", settings_doctype=None)
+		channel_filter = [{"key": "channel", "label": "Channel", "options": [("CUSTOM", "CUSTOM")]}]
+
+		declared = [(unicommerce, channel_filter)]
+		# A provider that declares nothing makes nothing common in the combined view.
+		self.assertEqual(api._common_filter_options(declared, ["unicommerce", "shopify"]), [])
+		# A single-provider scope keeps that provider's own filters.
+		options = api._common_filter_options(declared, ["unicommerce"])
+		self.assertEqual([option["key"] for option in options], ["channel"])
+		# When both declare the same key it stays common, with merged option values.
+		declared = [
+			(unicommerce, channel_filter),
+			(shopify, [{"key": "channel", "label": "Channel", "options": [("WEB", "WEB")]}]),
+		]
+		options = api._common_filter_options(declared, ["unicommerce", "shopify"])
+		self.assertEqual([option["key"] for option in options], ["channel"])
+		self.assertEqual(options[0]["options"], [("CUSTOM", "CUSTOM"), ("WEB", "WEB")])
+
+	def test_combined_view_keeps_only_columns_common_to_every_provider(self):
+		from ecommerce_core.dashboard.registry import Provider
+
+		unicommerce = Provider(integration="unicommerce", label="Unicommerce", settings_doctype=None)
+		shopify = Provider(integration="shopify", label="Shopify", settings_doctype=None)
+		uni_columns = [
+			{"key": "channel", "label": "Channel"},
+			{"key": "tracking", "label": "Tracking Number"},
+		]
+
+		declared = [(unicommerce, uni_columns)]
+		# A provider that declares nothing leaves no common column in the combined view.
+		self.assertEqual(api._common_order_columns(declared, ["unicommerce", "shopify"]), [])
+		# A single-provider scope keeps that provider's own columns.
+		self.assertEqual(
+			[key["key"] for key in api._common_order_columns(declared, ["unicommerce"])],
+			["channel", "tracking"],
+		)
+		# A key both providers declare stays common.
+		declared = [
+			(unicommerce, uni_columns),
+			(shopify, [{"key": "channel", "label": "Channel"}]),
+		]
+		self.assertEqual(
+			[key["key"] for key in api._common_order_columns(declared, ["unicommerce", "shopify"])],
+			["channel"],
+		)

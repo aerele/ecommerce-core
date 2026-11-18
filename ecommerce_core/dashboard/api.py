@@ -228,7 +228,9 @@ def _orders_section(registry, integration, search, status, page, page_size, filt
 	"""
 	problems = []
 	provider_filters = _provider_order_filters(registry, integration, problems)
-	options = _merged_filter_options(provider_filters)
+	active_integrations = [p.integration for p in registry.active(integration, "get_recent_orders")]
+	provider_columns = _provider_order_columns(registry, integration, problems)
+	options = _common_filter_options(provider_filters, active_integrations)
 	filters = {k: v for k, v in (filters or {}).items() if any(f["key"] == k for f in options)} or None
 
 	providers = registry.active(integration, "get_recent_orders")
@@ -260,7 +262,7 @@ def _orders_section(registry, integration, search, status, page, page_size, filt
 		"problems": problems,
 		"unsupported": unsupported,
 		"filter_options": options,
-		"columns": _merged_order_columns(registry, integration, problems),
+		"columns": _common_order_columns(provider_columns, active_integrations),
 	}
 
 
@@ -273,6 +275,18 @@ def _provider_order_filters(
 		options = call_adapter(provider, "get_order_filter_options", problems, [])
 		if options:
 			out.append((provider, options))
+	return out
+
+
+def _provider_order_columns(
+	registry: Registry, integration: str | None, problems: list[str]
+) -> list[tuple[Provider, list[dict]]]:
+	"""(provider, column definitions) for every enabled provider in scope that declares some."""
+	out = []
+	for provider in registry.active(integration, "get_order_columns"):
+		columns = call_adapter(provider, "get_order_columns", problems, [])
+		if columns:
+			out.append((provider, columns))
 	return out
 
 
@@ -291,11 +305,30 @@ def _merged_filter_options(provider_filters) -> list[dict]:
 	return list(merged.values())
 
 
-def _merged_order_columns(registry: Registry, integration: str | None, problems: list[str]) -> list[dict]:
+def _common_filter_options(provider_filters, active_integrations: list[str]) -> list[dict]:
+	"""Filter definitions shared by every active provider in scope.
+
+	Combined view: a filter only one connector understands would silently drop the
+	others' rows while selected, so only keys every active provider declares are
+	common. A single-provider scope (one connector's tab, or one connector
+	installed) keeps that provider's own filters.
+	"""
+	if not active_integrations or len(active_integrations) == 1:
+		return _merged_filter_options(provider_filters)
+
+	declared = {p.integration: {o.get("key") for o in opts} for p, opts in provider_filters}
+	common = set.intersection(*(declared.get(name, set()) for name in active_integrations))
+	if not common:
+		return []
+	merged = {option["key"]: option for option in _merged_filter_options(provider_filters)}
+	return [merged[key] for key in sorted(common & merged.keys())]
+
+
+def _merged_order_columns(provider_columns) -> list[dict]:
 	"""Union of every provider's extra order columns, merged by key."""
 	merged: dict[str, dict] = {}
-	for provider in registry.active(integration, "get_order_columns"):
-		for column in call_adapter(provider, "get_order_columns", problems, []) or []:
+	for _provider, columns in provider_columns:
+		for column in columns:
 			key = column.get("key")
 			if not key:
 				continue
@@ -303,6 +336,28 @@ def _merged_order_columns(registry: Registry, integration: str | None, problems:
 				key, {"key": key, "label": column.get("label") or key, "width": column.get("width")}
 			)
 	return list(merged.values())
+
+
+def _common_order_columns(provider_columns, active_integrations: list[str]) -> list[dict]:
+	"""Extra order columns shared by every active provider in scope.
+
+	Combined view: columns only one connector fills would show a dash in every
+	other connector's rows, so only keys every active provider declares stay.
+	A single-provider scope (one connector's tab, or one connector installed)
+	keeps that provider's own columns.
+	"""
+	if not active_integrations or len(active_integrations) == 1:
+		return _merged_order_columns(provider_columns)
+
+	declared = {
+		provider.integration: {column.get("key") for column in columns}
+		for provider, columns in provider_columns
+	}
+	common = set.intersection(*(declared.get(name, set()) for name in active_integrations))
+	if not common:
+		return []
+	merged = {column["key"]: column for column in _merged_order_columns(provider_columns)}
+	return [merged[key] for key in sorted(common & merged.keys())]
 
 
 def _payments_section(registry, integration, search, status, page, page_size):
