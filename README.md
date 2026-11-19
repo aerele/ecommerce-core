@@ -5,8 +5,8 @@
 	<h2>Ecommerce Core</h2>
 	<p align="center">Shared foundation for standalone ERPNext ecommerce integrations</p>
 
-[![CI](https://github.com/aerele/ecommerce-core/actions/workflows/ci.yml/badge.svg?branch=develop)](https://github.com/aerele/ecommerce-core/actions/workflows/ci.yml)
-[![Linters](https://github.com/aerele/ecommerce-core/actions/workflows/linters.yml/badge.svg?branch=develop)](https://github.com/aerele/ecommerce-core/actions/workflows/linters.yml)
+[![CI](https://github.com/aerele/ecommerce-core/actions/workflows/ci.yml/badge.svg?branch=version-16)](https://github.com/aerele/ecommerce-core/actions/workflows/ci.yml)
+[![Linters](https://github.com/aerele/ecommerce-core/actions/workflows/linters.yml/badge.svg?branch=version-16)](https://github.com/aerele/ecommerce-core/actions/workflows/linters.yml)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](license.txt)
 </div>
 <br>
@@ -20,7 +20,7 @@
     -
 	<a href="https://github.com/aerele/ecommerce-core">Repository</a>
 	-
-	<a href="https://github.com/aerele/ecommerce-core/blob/develop/AGENTS.md">AI Development Guide</a>
+	<a href="https://github.com/aerele/ecommerce-core/blob/version-16/AGENTS.md">AI Development Guide</a>
 </div>
 
 ## Ecommerce Core
@@ -56,17 +56,17 @@ Ecommerce Core is not an ecommerce connector by itself. Install a compatible con
 
 | Frappe Version | ERPNext Version | Python Version |
 | -------------- | --------------- | -------------- |
-| Version 16 (`develop`) | Version 16 (`develop`) | 3.14+ |
+| Version 16 (`version-16`) | Version 16 (`version-16`) | 3.14+ |
 
 ## Installation
 
-Ecommerce Core targets Frappe and ERPNext version 16 through the `develop` branch.
+The `version-16` branch supports the `version-16` branches of Frappe and ERPNext. It requires Python 3.14 or newer, subject to the Python versions supported by Frappe.
 
-Set up a Frappe bench by following the [Frappe installation guide](https://docs.frappe.io/framework/user/en/installation), then install ERPNext and Ecommerce Core:
+Set up a Frappe bench by following the [Frappe installation guide](https://docs.frappe.io/framework/user/en/installation), using Frappe branch `version-16` (`bench init --frappe-branch version-16 <bench-name>`), then install ERPNext and Ecommerce Core:
 
 ```sh
-bench get-app erpnext --branch develop
-bench get-app https://github.com/aerele/ecommerce-core --branch develop
+bench get-app erpnext --branch version-16
+bench get-app https://github.com/aerele/ecommerce-core --branch version-16
 bench --site <site-name> install-app erpnext
 bench --site <site-name> install-app ecommerce_core
 ```

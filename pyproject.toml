@@ -4,7 +4,7 @@ description = "Shared core for ERPNext ecommerce integration apps"
 authors = [
     { name = "Aerele Technologies", email = "integrations-support@aerele.in" }
 ]
-requires-python = ">=3.10"
+requires-python = ">=3.14"
 readme = "./README.md"
 dynamic = ["version"]
 dependencies = []
@@ -31,5 +31,5 @@ indent-style = "tab"
 docstring-code-format = true
 
 [tool.bench.frappe-dependencies]
-frappe = ">=16.0.0-dev,<=17.0.0-dev"
-erpnext = ">=16.0.0-dev,<=17.0.0-dev"
+frappe = ">=16.0.0,<17.0.0-dev"
+erpnext = ">=16.0.0,<17.0.0-dev"

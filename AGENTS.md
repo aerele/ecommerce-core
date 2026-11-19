@@ -134,8 +134,8 @@ Every connector project uses **two separate Frappe sites** — never build and v
 
 ```toml
 [tool.bench.frappe-dependencies]
-frappe = ">=16.0.0-dev,<=17.0.0-dev"
-erpnext = ">=16.0.0-dev,<=17.0.0-dev"
+frappe = ">=16.0.0,<17.0.0-dev"
+erpnext = ">=16.0.0,<17.0.0-dev"
 ```
 
 ---
