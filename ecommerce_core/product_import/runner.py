@@ -82,30 +82,25 @@ LOCK_TTL_SECONDS = 180
 LOCK_QUEUED_TTL_SECONDS = 300  # grace for a job waiting in the queue
 
 
-def _lock_key(provider: ProductImportProvider) -> str:
-	"""Redis cache key of the per-provider bulk-run lock (one per job name)."""
-	return f"ecommerce_product_import_lock:{provider.job_name}"
+def _account_kwargs(account: str | None) -> dict:
+	"""``account=`` kwarg for adapter calls, omitted for single-store runs (keeps old adapters working)."""
+	return {"account": account} if account else {}
 
 
-def _acquire_lock(provider: ProductImportProvider) -> str | None:
+def _lock_key(provider: ProductImportProvider, account: str | None = None) -> str:
+	"""Redis cache key of the bulk-run lock (one per job name, i.e. per provider and store account)."""
+	return f"ecommerce_product_import_lock:{provider.job_name_for(account)}"
+
+
+def _acquire_lock(provider: ProductImportProvider, account: str | None = None) -> str | None:
 	"""Atomically claim the per-provider bulk run slot (SET NX with expiry)."""
 	token = frappe.generate_hash(length=16)
-	key = frappe.cache.make_key(_lock_key(provider))
+	key = frappe.cache.make_key(_lock_key(provider, account))
 	if frappe.cache.set(  # nosemgrep: frappe-semgrep-rules.rules.frappe-cache-breaks-multitenancy
 		name=key, value=token, nx=True, ex=LOCK_QUEUED_TTL_SECONDS
 	):
 		return token
 	return None
-
-
-def _lock_owner(provider: ProductImportProvider) -> str | None:
-	"""Current owner token of the provider's lock, or None when free/expired."""
-	value = frappe.cache.get(  # nosemgrep: frappe-semgrep-rules.rules.frappe-cache-breaks-multitenancy
-		frappe.cache.make_key(_lock_key(provider))
-	)
-	if isinstance(value, bytes):
-		value = value.decode()
-	return value
 
 
 _REFRESH_LOCK_LUA = """
@@ -117,38 +112,52 @@ return 0
 """
 
 
-def _refresh_lock(provider: ProductImportProvider, token: str | None = None) -> bool:
+def _refresh_lock(
+	provider: ProductImportProvider, token: str | None = None, account: str | None = None
+) -> bool:
 	"""Extend the lock lease, but only while this worker still owns it."""
 	if token is None:
 		return True
-	key = frappe.cache.make_key(_lock_key(provider))
+	key = frappe.cache.make_key(_lock_key(provider, account))
 	# Atomic compare-and-expire: an expired lock taken over by another worker is
 	# never recreated by the old owner (a plain get-then-set race could do that).
 	return bool(frappe.cache.eval(_REFRESH_LOCK_LUA, 1, key, token, int(LOCK_TTL_SECONDS)))
 
 
-def _require_lock(provider: ProductImportProvider, token: str | None) -> None:
+def _require_lock(provider: ProductImportProvider, token: str | None, account: str | None = None) -> None:
 	"""Stop the run when another worker took over the lock."""
-	if not _refresh_lock(provider, token):
+	if not _refresh_lock(provider, token, account):
 		frappe.throw(_("Another sync took over {0}; stopping this run.").format(provider.label))
 
 
-def _release_lock(provider: ProductImportProvider, token: str | None = None) -> None:
-	"""Delete the lock; only the token's owner (or an absent owner) may do so."""
-	# Only the owner may release; an expired lock re-claimed by another run stays.
-	if token is not None and _lock_owner(provider) not in (token, None):
-		return
-	frappe.cache.delete_value(_lock_key(provider))
+_RELEASE_LOCK_LUA = """
+if redis.call('get', KEYS[1]) == ARGV[1] then
+	return redis.call('del', KEYS[1])
+end
+return 0
+"""
+
+
+def _release_lock(
+	provider: ProductImportProvider, token: str | None = None, account: str | None = None
+) -> None:
+	"""Delete the lock; only the token's owner may do so (no token = unconditional)."""
+	if token is None:
+		frappe.cache.delete_value(_lock_key(provider, account))
+	else:
+		# Atomic compare-and-delete: a lock that expired and was re-claimed by
+		# another run between a get and a delete must never be removed by us.
+		frappe.cache.eval(_RELEASE_LOCK_LUA, 1, frappe.cache.make_key(_lock_key(provider, account)), token)
 	# A finished run changes mappings and logs the dashboard aggregates are built from.
 	invalidate_dashboard_cache()
 
 
-def is_sync_running(provider: ProductImportProvider) -> bool:
+def is_sync_running(provider: ProductImportProvider, account: str | None = None) -> bool:
 	"""True when a bulk sync is in flight: the adapter's own status if it manages one, else our lock."""
 	if provider.implements("get_sync_status"):
-		return bool((provider.adapter.get_sync_status() or {}).get("running"))
+		return bool((provider.adapter.get_sync_status(**_account_kwargs(account)) or {}).get("running"))
 
-	return bool(frappe.cache.exists(frappe.cache.make_key(_lock_key(provider))))
+	return bool(frappe.cache.exists(_lock_key(provider, account)))
 
 
 def enqueue_sync_all(
@@ -156,15 +165,20 @@ def enqueue_sync_all(
 	search: str | None = None,
 	sync_filter: str | None = None,
 	force_full: bool = False,
+	log_name: str | None = None,
+	account: str | None = None,
 ) -> dict:
-	"""Start a full-catalog bulk sync; returns job metadata for the page."""
+	"""Start a full-catalog bulk sync; returns job metadata for the page.
+
+	``log_name`` reuses an existing integration log (used by retries) instead of creating one.
+	"""
 	sync_filter = sync_filter if sync_filter in SYNC_FILTERS else None
 
 	if provider.has_custom_bulk_sync:
-		if is_sync_running(provider):
+		if is_sync_running(provider, account):
 			return {"status": "Busy", "message": _("A product sync is already running.")}
-		result = provider.adapter.sync_all(search=search) or {}
-		return {"event": provider.event_name, **result}
+		result = provider.adapter.sync_all(search=search, **_account_kwargs(account)) or {}
+		return {"event": provider.event_name_for(account), **result}
 
 	return _enqueue_bulk(
 		provider,
@@ -174,42 +188,123 @@ def enqueue_sync_all(
 			"search": search,
 			"sync_filter": sync_filter,
 			"force_full": force_full,
+			**_account_kwargs(account),
 		},
 		search=search,
 		sync_filter=sync_filter,
 		force_full=force_full,
 		user=frappe.session.user,
+		log_name=log_name,
+		account=account,
 	)
 
 
 def enqueue_sync_selected(
-	provider: ProductImportProvider, product_ids: list[str], labels: dict[str, str] | None = None
+	provider: ProductImportProvider,
+	product_ids: list[str],
+	labels: dict[str, str] | None = None,
+	log_name: str | None = None,
+	account: str | None = None,
 ) -> dict:
-	"""Start a bulk sync restricted to the given product ids."""
+	"""Start a bulk sync restricted to the given product ids (``log_name`` as in enqueue_sync_all)."""
 	return _enqueue_bulk(
 		provider,
 		log_message=_("Selected product sync queued"),
-		request_data={"integration": provider.integration, "product_ids": product_ids, "labels": labels},
+		request_data={
+			"integration": provider.integration,
+			"product_ids": product_ids,
+			"labels": labels,
+			**_account_kwargs(account),
+		},
 		product_ids=product_ids,
 		labels=labels,
 		user=frappe.session.user,
+		log_name=log_name,
+		account=account,
 	)
 
 
 def retry_bulk_sync_job(payload: dict | None = None, request_id: str | None = None) -> None:
-	"""Retry entry for the integration log, which calls methods with payload and request_id."""
+	"""Retry entry for the integration log, which calls methods with payload and request_id.
+
+	The retried log (``request_id``) is reused for the new run, so it never stays "Queued";
+	when a sync is already running it goes back to "Error" so it can be retried later.
+	"""
+	try:
+		_retry_bulk_sync(payload, request_id)
+	except Exception as e:
+		# The log retry already set the log to "Queued"; record the failure on it.
+		if request_id:
+			_update_existing_log(request_id, status="Error", exception=e, rollback=True)
+		raise
+
+
+def _retry_bulk_sync(payload: dict | None, request_id: str | None) -> None:
 	if not isinstance(payload, dict) or not payload.get("integration"):
 		frappe.throw(_("This log has no retriable product-sync payload."))
 	provider = get_provider(payload["integration"])
+	account = _retry_account(provider, payload.get("account"))
 	if payload.get("product_ids"):
-		enqueue_sync_selected(provider, payload["product_ids"], labels=payload.get("labels"))
+		result = enqueue_sync_selected(
+			provider,
+			payload["product_ids"],
+			labels=payload.get("labels"),
+			log_name=request_id,
+			account=account,
+		)
 	else:
-		enqueue_sync_all(
+		result = enqueue_sync_all(
 			provider,
 			search=payload.get("search"),
 			sync_filter=payload.get("sync_filter"),
 			force_full=bool(payload.get("force_full")),
+			log_name=request_id,
+			account=account,
 		)
+
+	result = result or {}
+	if not request_id or result.get("log") == request_id:
+		return
+	if result.get("status") == "Busy":
+		_update_existing_log(
+			request_id,
+			status="Error",
+			message=_("Retry skipped: a product sync is already running. Retry again once it finishes."),
+		)
+	else:
+		# Adapter-managed bulk sync: it tracks its own run, so close out the retried log.
+		_update_existing_log(request_id, status="Success", message=_("Retried as a new product sync job."))
+
+
+def _retry_account(provider: ProductImportProvider, account: str | None) -> str | None:
+	"""The store account a retried sync runs for; throws when the integration or store is no longer usable."""
+	if not provider.enabled:
+		frappe.throw(_("{0} is disabled, so this product sync cannot be retried.").format(provider.label))
+	names = [a["name"] for a in provider.get_accounts()]
+	if not names:
+		return account or None
+	if not account:
+		if len(names) > 1:
+			frappe.throw(
+				_(
+					"This log has no {0} store account and there are several stores. Start the sync again from the Product Import page."
+				).format(provider.label)
+			)
+		return names[0]
+	if account not in names:
+		frappe.throw(_("{0} is not an enabled {1} store account.").format(account, provider.label))
+	return account
+
+
+def _update_existing_log(log_name: str, **kwargs):
+	"""Write to an existing integration log by temporarily binding it as the request log."""
+	previous = getattr(frappe.flags, "request_id", None)
+	frappe.flags.request_id = log_name
+	try:
+		integration = frappe.db.get_value("Ecommerce Integration Log", log_name, "integration")
+		return create_integration_log(integration, **kwargs)
+	finally:
+		frappe.flags.request_id = previous
 
 
 def _enqueue_bulk(
@@ -223,28 +318,33 @@ def _enqueue_bulk(
 	labels: dict[str, str] | None = None,
 	user: str | None = None,
 	force_full: bool = False,
+	log_name: str | None = None,
+	account: str | None = None,
 ) -> dict:
-	"""Claim the lock, create the Queued log and enqueue the bulk job."""
-	if is_sync_running(provider):
+	"""Claim the lock, create (or reuse ``log_name``) the Queued log and enqueue the bulk job."""
+	if is_sync_running(provider, account):
 		return {"status": "Busy", "message": _("A product sync is already running.")}
-	lock_token = _acquire_lock(provider)
+	lock_token = _acquire_lock(provider, account)
 	if not lock_token:
 		return {"status": "Busy", "message": _("A product sync is already running.")}
 
 	try:
-		log = create_integration_log(
-			provider.integration,
-			status="Queued",
-			method=f"{__name__}.retry_bulk_sync_job",
-			message=log_message,
-			request_data=request_data,
-		)
+		log_kwargs = {
+			"status": "Queued",
+			"method": f"{__name__}.retry_bulk_sync_job",
+			"message": log_message,
+			"request_data": request_data,
+		}
+		if log_name:
+			log = _update_existing_log(log_name, **log_kwargs)
+		else:
+			log = create_integration_log(provider.integration, make_new=True, **log_kwargs)
 
 		frappe.enqueue(
 			run_bulk_sync_job,
 			queue=BULK_SYNC_QUEUE,
 			timeout=BULK_SYNC_TIMEOUT,
-			job_name=provider.job_name,
+			job_name=provider.job_name_for(account),
 			enqueue_after_commit=True,
 			integration=provider.integration,
 			log_name=log.name,
@@ -255,12 +355,18 @@ def _enqueue_bulk(
 			user=user,
 			force_full=force_full,
 			lock_token=lock_token,
+			account=account,
 		)
 	except Exception:
-		_release_lock(provider, lock_token)
+		_release_lock(provider, lock_token, account)
 		raise
 
-	return {"status": "Queued", "log": log.name, "event": provider.event_name, "job_name": provider.job_name}
+	return {
+		"status": "Queued",
+		"log": log.name,
+		"event": provider.event_name_for(account),
+		"job_name": provider.job_name_for(account),
+	}
 
 
 def run_bulk_sync_job(
@@ -273,10 +379,11 @@ def run_bulk_sync_job(
 	sync_filter: str | None = None,
 	force_full: bool = False,
 	lock_token: str | None = None,
+	account: str | None = None,
 ) -> dict:
 	"""Background worker: sync either the selected products or the full catalog."""
 	provider = get_provider(integration)
-	publisher = ProgressPublisher(provider.event_name, user=user)
+	publisher = ProgressPublisher(provider.event_name_for(account), user=user)
 	selected = [pid for pid in (product_ids or []) if pid]
 	labels = labels or {}
 
@@ -309,15 +416,16 @@ def run_bulk_sync_job(
 					counts,
 					failed_ids,
 					lock_token,
+					account,
 				)
 		else:
 			cursor = None
 			incremental = provider.supports_incremental and not force_full
 			while True:
-				_require_lock(provider, lock_token)
-				page = _fetch_products_page_with_retry(provider, cursor, search)
+				_require_lock(provider, lock_token, account)
+				page = _fetch_products_page_with_retry(provider, cursor, search, account)
 				products = page.get("products") or []
-				products = _select_products(provider, products, sync_filter, incremental, counts)
+				products = _select_products(provider, products, sync_filter, incremental, counts, account)
 
 				for index, product in enumerate(products):
 					product_id = product.get("id") if isinstance(product, dict) else product
@@ -327,7 +435,7 @@ def run_bulk_sync_job(
 
 					label = product.get("name") or product_id if isinstance(product, dict) else product_id
 					_sync_single_product(
-						provider, publisher, product_id, label, index, counts, failed_ids, lock_token
+						provider, publisher, product_id, label, index, counts, failed_ids, lock_token, account
 					)
 
 				cursor = page.get("next_cursor")
@@ -393,7 +501,7 @@ def run_bulk_sync_job(
 		raise
 	finally:
 		frappe.flags.request_id = previous_request_id
-		_release_lock(provider, lock_token)
+		_release_lock(provider, lock_token, account)
 
 
 def _sync_single_product(
@@ -405,13 +513,14 @@ def _sync_single_product(
 	counts: dict,
 	failed_ids: list[str],
 	lock_token: str | None = None,
+	account: str | None = None,
 ) -> None:
 	"""Sync one product inside a savepoint and log the outcome per product."""
 	savepoint = f"ecommerce_product_import_{next(_savepoint_counter)}"
-	_require_lock(provider, lock_token)
+	_require_lock(provider, lock_token, account)
 	try:
 		frappe.db.savepoint(savepoint)
-		result = provider.adapter.sync_product(product_id)
+		result = provider.adapter.sync_product(product_id, **_account_kwargs(account))
 		action = result.get("action") if isinstance(result, dict) else None
 		item_code = result.get("item_code") if isinstance(result, dict) else None
 		suffix = f" (Item: {item_code})" if item_code else ""
@@ -462,13 +571,16 @@ def _is_transient(exc: Exception) -> bool:
 
 
 def _fetch_products_page_with_retry(
-	provider: ProductImportProvider, cursor: str | None = None, search: str | None = None
+	provider: ProductImportProvider,
+	cursor: str | None = None,
+	search: str | None = None,
+	account: str | None = None,
 ) -> dict:
 	"""Fetch one catalog page, retrying transient remote failures with backoff so a
 	single 429/5xx does not abort an hours-long run."""
 	for attempt in range(FETCH_RETRIES + 1):
 		try:
-			return _fetch_products_page(provider, cursor=cursor, search=search)
+			return _fetch_products_page(provider, cursor=cursor, search=search, account=account)
 		except Exception as exc:
 			if attempt >= FETCH_RETRIES or not _is_transient(exc):
 				raise
@@ -477,15 +589,27 @@ def _fetch_products_page_with_retry(
 
 
 def _fetch_products_page(
-	provider: ProductImportProvider, cursor: str | None = None, search: str | None = None
+	provider: ProductImportProvider,
+	cursor: str | None = None,
+	search: str | None = None,
+	account: str | None = None,
 ) -> dict:
 	"""One catalog page via the adapter, or the mapped-items fallback when it cannot list."""
 	if provider.can_list_products:
-		return provider.adapter.get_products(limit=BULK_PAGE_SIZE, cursor=cursor, search=search) or {}
+		return (
+			provider.adapter.get_products(
+				limit=BULK_PAGE_SIZE, cursor=cursor, search=search, **_account_kwargs(account)
+			)
+			or {}
+		)
 
 	# No provider listing: iterate the generic mapped-items view instead.
 	return status.list_mapped_products(
-		provider.integration, limit=BULK_PAGE_SIZE, cursor=cursor, search=search
+		provider.integration,
+		limit=BULK_PAGE_SIZE,
+		cursor=cursor,
+		search=search,
+		account_filter=provider.account_filter(account),
 	)
 
 
@@ -495,12 +619,17 @@ def _select_products(
 	sync_filter: str | None,
 	incremental: bool,
 	counts: dict,
+	account: str | None = None,
 ) -> list:
 	"""Apply the page's sync filter and the incremental skip with one status lookup."""
 	if not (sync_filter or incremental) or not products:
 		return products
 
-	rows = status.attach_sync_status(provider.integration, [p for p in products if isinstance(p, dict)])
+	rows = status.attach_sync_status(
+		provider.integration,
+		[p for p in products if isinstance(p, dict)],
+		account_filter=provider.account_filter(account),
+	)
 	selected = []
 	for product in rows:
 		if sync_filter and product.get("sync_state") != sync_filter:

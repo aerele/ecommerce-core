@@ -54,6 +54,7 @@ def get_products(
 	cursor: str | None = None,
 	search: str | None = None,
 	sync_filter: str | None = None,
+	account: str | None = None,
 ) -> dict:
 	"""One page of provider products, enriched with generic sync status."""
 	frappe.only_for("System Manager")
@@ -65,7 +66,9 @@ def get_products(
 	if not cstr(integration).strip():
 		return _merged_products_page(limit, cursor, search, sync_filter)
 
-	return _provider_page(_get_enabled_provider(integration), limit, cursor, search, sync_filter)
+	provider = _get_enabled_provider(integration)
+	account = _resolve_account(provider, account)
+	return _provider_page(provider, limit, cursor, search, sync_filter, account)
 
 
 def _provider_page(
@@ -74,8 +77,10 @@ def _provider_page(
 	cursor: str | None,
 	search: str | None,
 	sync_filter: str | None,
+	account: str | None = None,
 ) -> dict:
 	"""'limit' enriched rows for one provider, spanning adapter pages as needed."""
+	account_filter = provider.account_filter(account)
 	filtered = sync_filter in SYNC_FILTERS
 	# "synced" comes from local tables, no remote scan.
 	local_synced = sync_filter == "synced"
@@ -94,21 +99,25 @@ def _provider_page(
 				cursor=adapter_cursor,
 				search=search,
 				synced_only=True,
+				account_filter=account_filter,
 			)
 		elif provider.can_list_products:
 			if filtered:
-				result = _filtered_provider_page(provider, page_size, adapter_cursor, search, sync_filter)
+				result = _filtered_provider_page(
+					provider, page_size, adapter_cursor, search, sync_filter, account
+				)
 			else:
-				result = _fetch_provider_page(provider, page_size, adapter_cursor, search)
+				result = _fetch_provider_page(provider, page_size, adapter_cursor, search, account)
 		else:
 			result = status.list_mapped_products(
 				provider.integration,
 				limit=page_size,
 				cursor=adapter_cursor,
 				search=search,
+				account_filter=account_filter,
 			)
 
-		rows = status.attach_sync_status(provider.integration, result.get("products") or [])
+		rows = status.attach_sync_status(provider.integration, result.get("products") or [], account_filter)
 		if filtered:
 			rows = [p for p in rows if p.get("sync_state") == sync_filter]
 
@@ -126,9 +135,14 @@ def _provider_page(
 def _merged_products_page(
 	limit: int, cursor: str | None, search: str | None, sync_filter: str | None
 ) -> dict:
-	"""One page stitched across all enabled providers, in registry order."""
-	providers = [p for p in get_registered_providers() if p.enabled]
-	if not providers:
+	"""One page stitched across all enabled providers (and their store accounts), in registry order."""
+	sources = [
+		(provider, account)
+		for provider in get_registered_providers()
+		if provider.enabled
+		for account in (provider.get_accounts() or [None])
+	]
+	if not sources:
 		return {"products": [], "total": 0, "next_cursor": None, "limit": limit, "errors": []}
 
 	start_index, provider_cursor = _decode_merged_cursor(cursor)
@@ -137,8 +151,8 @@ def _merged_products_page(
 	errors: list[dict] = []
 	next_cursor = None
 
-	for index in range(start_index, len(providers)):
-		provider = providers[index]
+	for index in range(start_index, len(sources)):
+		provider, account = sources[index]
 		inner_cursor = provider_cursor if index == start_index else None
 
 		# Keep consuming the provider until the page fills, the provider runs
@@ -146,12 +160,20 @@ def _merged_products_page(
 		# request (otherwise its remaining rows would be skipped).
 		while True:
 			try:
-				page = _provider_page(provider, limit - len(collected), inner_cursor, search, sync_filter)
+				page = _provider_page(
+					provider,
+					limit - len(collected),
+					inner_cursor,
+					search,
+					sync_filter,
+					account and account["name"],
+				)
 			except Exception as e:
 				frappe.log_error(title=f"Product Sync: {provider.label} listing failed")
-				errors.append(
-					{"integration": provider.integration, "label": provider.label, "error": _short_error(e)}
-				)
+				label = provider.label
+				if account:
+					label = f"{label} · {account.get('label') or account['name']}"
+				errors.append({"integration": provider.integration, "label": label, "error": _short_error(e)})
 				inner_cursor = None
 				break
 
@@ -164,6 +186,9 @@ def _merged_products_page(
 			for row in rows:
 				row["integration"] = provider.integration
 				row["provider_label"] = provider.label
+				if account:
+					row["account"] = account["name"]
+					row["account_label"] = account.get("label") or account["name"]
 			collected.extend(rows)
 
 			inner_cursor = page.get("next_cursor")
@@ -173,7 +198,7 @@ def _merged_products_page(
 		if len(collected) >= limit:
 			if inner_cursor:
 				next_cursor = _encode_merged_cursor(index, inner_cursor)
-			elif index + 1 < len(providers):
+			elif index + 1 < len(sources):
 				# Provider boundary reached exactly: continue with the next one.
 				next_cursor = _encode_merged_cursor(index + 1, None)
 			break
@@ -205,11 +230,20 @@ def _decode_merged_cursor(cursor: str | None) -> tuple[int, str | None]:
 
 
 def _fetch_provider_page(
-	provider: ProductImportProvider, limit: int, cursor: str | None, search: str | None
+	provider: ProductImportProvider,
+	limit: int,
+	cursor: str | None,
+	search: str | None,
+	account: str | None = None,
 ) -> dict:
 	"""Call the adapter listing, turning remote failures into a readable message."""
 	try:
-		return provider.adapter.get_products(limit=limit, cursor=cursor, search=search) or {}
+		return (
+			provider.adapter.get_products(
+				limit=limit, cursor=cursor, search=search, **runner._account_kwargs(account)
+			)
+			or {}
+		)
 	except Exception as e:
 		frappe.log_error(title=f"Product Sync: {provider.label} listing failed")
 		frappe.throw(
@@ -227,7 +261,12 @@ def _short_error(e: Exception) -> str:
 
 
 def _filtered_provider_page(
-	provider: ProductImportProvider, limit: int, cursor: str | None, search: str | None, sync_filter: str
+	provider: ProductImportProvider,
+	limit: int,
+	cursor: str | None,
+	search: str | None,
+	sync_filter: str,
+	account: str | None = None,
 ) -> dict:
 	"""Collect 'limit' rows matching 'sync_filter' across adapter pages."""
 	adapter_cursor, skip = _decode_envelope(cursor)
@@ -235,13 +274,15 @@ def _filtered_provider_page(
 	total = None
 	next_cursor = None
 	for _scan_page in range(FILTER_SCAN_PAGE_LIMIT):
-		page = _fetch_provider_page(provider, BULK_PAGE_SIZE, adapter_cursor, search)
+		page = _fetch_provider_page(provider, BULK_PAGE_SIZE, adapter_cursor, search, account)
 		if total is None:
 			total = page.get("total")
 
 		matches = [
 			p
-			for p in status.attach_sync_status(provider.integration, page.get("products") or [])
+			for p in status.attach_sync_status(
+				provider.integration, page.get("products") or [], provider.account_filter(account)
+			)
 			if p.get("sync_state") == sync_filter
 		]
 		available = matches[skip:]
@@ -288,46 +329,52 @@ def _decode_envelope(cursor: str | None) -> tuple[str | None, int]:
 
 
 @frappe.whitelist(methods=["GET"])
-def get_stats(integration: str) -> dict:
+def get_stats(integration: str, account: str | None = None) -> dict:
 	"""Generic sync statistics; provider count when the adapter can supply it."""
 	provider = _get_provider(integration)
+	account = _resolve_account(provider, account)
 
 	provider_count = None
 	if provider.enabled and provider.implements("get_provider_count"):
 		cache_key = f"ecommerce_core:product_count:{provider.integration}"
+		if account:
+			cache_key += f":{account}"
 		cached = frappe.cache.get_value(cache_key)
 		if cached is not None:
 			provider_count = cint(cached)
 		else:
 			try:
-				provider_count = cint(provider.adapter.get_provider_count())
+				provider_count = cint(provider.adapter.get_provider_count(**runner._account_kwargs(account)))
 				frappe.cache.set_value(cache_key, provider_count, expires_in_sec=PROVIDER_COUNT_TTL_SECONDS)
 			except Exception:
 				# Stats must still render, but never hide why the count is missing.
 				frappe.log_error(title=f"{provider.integration}: product count failed")
 				provider_count = None
 
-	stats = status.get_stats(provider.integration, provider_count=provider_count)
+	stats = status.get_stats(
+		provider.integration, provider_count=provider_count, account_filter=provider.account_filter(account)
+	)
 	stats["enabled"] = provider.enabled
 	return stats
 
 
 @frappe.whitelist(methods=["POST"])
-def sync_product(integration: str, product_id: str) -> dict:
+def sync_product(integration: str, product_id: str, account: str | None = None) -> dict:
 	"""Sync or re-sync a single provider product through its adapter."""
 	provider = _get_enabled_provider(integration)
+	account = _resolve_account(provider, account)
 	product_id = cstr(product_id).strip()
 	if not product_id:
 		frappe.throw(_("product_id is required"))
 
 	try:
-		result = provider.adapter.sync_product(product_id)
+		result = provider.adapter.sync_product(product_id, **runner._account_kwargs(account))
 	except Exception as exc:
 		create_integration_log(
 			provider.integration,
 			status="Failure",
 			message=_("Product {0} sync failed").format(product_id),
-			request_data={"product_id": product_id},
+			request_data={"product_id": product_id, **runner._account_kwargs(account)},
 			exception=exc,
 			rollback=True,
 		)
@@ -342,6 +389,7 @@ def sync_all(
 	search: str | None = None,
 	sync_filter: str | None = None,
 	force_full: bool | int | str = False,
+	account: str | None = None,
 ) -> dict:
 	"""Queue a bulk product sync (generic runner or adapter-managed)."""
 	provider = _get_enabled_provider(integration)
@@ -350,13 +398,20 @@ def sync_all(
 		search=cstr(search).strip() or None,
 		sync_filter=cstr(sync_filter).strip() or None,
 		force_full=bool(cint(force_full)),
+		account=_resolve_account(provider, account),
 	)
 
 
 @frappe.whitelist(methods=["POST"])
-def sync_selected(integration: str, product_ids: str | list, labels: str | dict | None = None) -> dict:
+def sync_selected(
+	integration: str,
+	product_ids: str | list,
+	labels: str | dict | None = None,
+	account: str | None = None,
+) -> dict:
 	"""Queue a bulk sync restricted to the selected provider products."""
 	provider = _get_enabled_provider(integration)
+	account = _resolve_account(provider, account)
 
 	if isinstance(product_ids, str):
 		try:
@@ -366,7 +421,7 @@ def sync_selected(integration: str, product_ids: str | list, labels: str | dict 
 	if not isinstance(product_ids, list):
 		frappe.throw(_("product_ids must be a list of product ids"))
 
-	product_ids = [pid.strip() for pid in product_ids if cstr(pid).strip()]
+	product_ids = [cstr(pid).strip() for pid in product_ids if cstr(pid).strip()]
 	if not product_ids:
 		frappe.throw(_("Select at least one product to sync."))
 	if len(product_ids) > MAX_SELECTED_SYNC:
@@ -374,7 +429,7 @@ def sync_selected(integration: str, product_ids: str | list, labels: str | dict 
 
 	names = _validate_labels(labels, product_ids)
 
-	return runner.enqueue_sync_selected(provider, product_ids, labels=names)
+	return runner.enqueue_sync_selected(provider, product_ids, labels=names, account=account)
 
 
 def _validate_labels(labels: str | dict | None, product_ids: list[str]) -> dict[str, str]:
@@ -394,14 +449,29 @@ def _validate_labels(labels: str | dict | None, product_ids: list[str]) -> dict[
 
 
 @frappe.whitelist(methods=["GET"])
-def get_sync_status(integration: str) -> dict:
+def get_sync_status(integration: str, account: str | None = None) -> dict:
 	"""Running/enabled state and realtime event name for one provider's bulk sync."""
 	provider = _get_provider(integration)
+	account = _resolve_account(provider, account)
 	return {
-		"running": runner.is_sync_running(provider),
+		"running": runner.is_sync_running(provider, account),
 		"enabled": provider.enabled,
-		"event": provider.event_name,
+		"event": provider.event_name_for(account),
+		"account": account,
 	}
+
+
+def _resolve_account(provider: ProductImportProvider, account: str | None) -> str | None:
+	"""Validate 'account' against the provider's store accounts; default to the first one."""
+	names = [a["name"] for a in provider.get_accounts()]
+	if not names:
+		return None
+	account = cstr(account).strip()
+	if not account:
+		return names[0]
+	if account not in names:
+		frappe.throw(_("{0} is not an enabled {1} store account.").format(account, provider.label))
+	return account
 
 
 def _get_provider(integration: str) -> ProductImportProvider:

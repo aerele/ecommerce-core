@@ -16,7 +16,7 @@ import {
 
 import NoticeBanner from "../../../ui/components/NoticeBanner.vue";
 import EmptyState from "../../../ui/components/EmptyState.vue";
-import { doctypeRoute } from "../../../ui/island/desk_links.js";
+import { doctypeRoute, formLink } from "../../../ui/island/desk_links.js";
 import { mirrorCsrfToken } from "../../../ui/island/csrf.js";
 import { onRealtimeEvent } from "../../../ui/island/realtime.js";
 import ProductRowActions from "./components/ProductRowActions.vue";
@@ -110,15 +110,52 @@ const providerOptions = computed(() => [
 	...providers.value.map((p) => ({ label: p.label, value: p.integration })),
 ]);
 
-// ERPNext form routes resolve under /app inside the desk shell, so the
-// connector's settings open as a normal desk navigation.
-function settingsRoute(provider) {
-	return doctypeRoute(provider?.settings_doctype);
+// ---------------------------------------------------------------- accounts
+// Multi-account connectors (e.g. several stores) expose `accounts`; the page
+// scopes listing, stats and sync to the selected one.
+
+const account = ref(typeof props.query.account === "string" ? props.query.account : "");
+const accountOptions = computed(() =>
+	(currentProvider.value?.accounts || []).map((a) => ({
+		label: a.label || a.name,
+		value: a.name,
+	})),
+);
+const currentAccount = computed(
+	() => (currentProvider.value?.accounts || []).find((a) => a.name === account.value) || null,
+);
+const accountLabel = computed(
+	() => currentAccount.value?.label || currentAccount.value?.name || "",
+);
+
+// Keep the selected account valid for the current integration; returns true
+// when it had to change.
+function ensureAccount() {
+	const options = accountOptions.value;
+	if (options.some((o) => o.value === account.value)) return false;
+	const next = options[0]?.value || "";
+	if (next === account.value) return false;
+	account.value = next;
+	return true;
+}
+
+// Added to request params only when an account is selected.
+function accountParams(value = account.value) {
+	return value ? { account: value } : {};
+}
+
+// ERPNext form routes resolve under /app inside the desk shell. For
+// multi-account connectors the selected account's settings record is opened.
+function settingsRoute(provider, acct = account.value) {
+	const doctype = provider?.settings_doctype;
+	if (!doctype) return null;
+	if (acct && provider?.accounts?.length) return formLink(doctype, acct);
+	return doctypeRoute(doctype);
 }
 
 function openSettings() {
 	const route = settingsRoute(currentProvider.value);
-	if (route) window.location.href = route;
+	if (route) window.open(route, "_blank", "noopener");
 }
 
 // ---------------------------------------------------------------- rows
@@ -129,8 +166,12 @@ const rows = ref([]);
 const rowsTotal = ref(null);
 const nextCursor = ref(null);
 const mergedErrors = ref([]);
-// Product ids are unique per provider, so state keys combine integration and id.
-const rowKey = (item) => `${item.integration || integration.value || ""}:${item.id}`;
+// Product ids are unique per provider account, so state keys combine
+// integration, account and id.
+const rowKey = (item) =>
+	`${item.integration || integration.value || ""}:${item.account || account.value || ""}:${
+		item.id
+	}`;
 const selection = ref([]);
 
 const listLoading = ref(false);
@@ -152,9 +193,13 @@ const MAX_EMPTY_SCAN_HOPS = 5;
 async function fetchRows(hop = 0) {
 	listLoading.value = true;
 	listError.value = "";
+	const reqIntegration = integration.value;
+	const reqAccount = account.value;
+	const isStale = () => reqIntegration !== integration.value || reqAccount !== account.value;
 	try {
 		const params = new URLSearchParams({
-			integration: integration.value || "",
+			integration: reqIntegration || "",
+			...accountParams(reqAccount),
 			limit: pageSize.value,
 			cursor: cursorStack.value[pageIndex.value] || "",
 			search: search.value || "",
@@ -185,6 +230,8 @@ async function fetchRows(hop = 0) {
 					`Request failed (${response.status} ${response.statusText})`,
 			);
 		}
+		// A newer request for another integration/account owns the list now.
+		if (isStale()) return;
 		const data = body.message;
 		rows.value = data?.products || [];
 		rowsTotal.value = data?.total ?? null;
@@ -201,13 +248,14 @@ async function fetchRows(hop = 0) {
 			return fetchRows(hop + 1);
 		}
 	} catch (err) {
+		if (isStale()) return;
 		rows.value = [];
 		rowsTotal.value = null;
 		nextCursor.value = null;
 		listError.value = errMessage(err);
 		toast.error(listError.value);
 	} finally {
-		listLoading.value = false;
+		if (!isStale()) listLoading.value = false;
 	}
 }
 
@@ -223,9 +271,23 @@ function resetAndFetch() {
 	fetchSyncStatus();
 }
 
-// Stats and sync status depend only on the integration; search, status filter
-// and page size just re-list rows.
-watch(integration, resetAndFetch);
+// Stats and sync status depend only on the integration and account; search,
+// status filter and page size just re-list rows. An integration change that
+// also resets the account fetches once, not twice.
+let suppressAccountWatch = false;
+watch(integration, () => {
+	suppressAccountWatch = ensureAccount();
+	resetAndFetch();
+});
+watch(account, () => {
+	if (suppressAccountWatch) {
+		suppressAccountWatch = false;
+		return;
+	}
+	resetAndFetch();
+});
+// Providers load after mount; pick the default account once they arrive.
+watch(providers, () => ensureAccount());
 watch([search, syncFilter, pageSize], resetRows);
 
 watch(
@@ -233,6 +295,14 @@ watch(
 	(value) => {
 		if (typeof value === "string" && value !== integration.value) {
 			integration.value = value;
+		}
+	},
+);
+watch(
+	() => props.query.account,
+	(value) => {
+		if (typeof value === "string" && value && value !== account.value) {
+			account.value = value;
 		}
 	},
 );
@@ -261,7 +331,14 @@ async function fetchStats() {
 		return;
 	}
 	try {
-		stats.value = await statsResource.submit({ integration: integration.value });
+		const reqIntegration = integration.value;
+		const reqAccount = account.value;
+		const result = await statsResource.submit({
+			integration: reqIntegration,
+			...accountParams(reqAccount),
+		});
+		if (reqIntegration !== integration.value || reqAccount !== account.value) return;
+		stats.value = result;
 	} catch (err) {
 		stats.value = null;
 	}
@@ -282,9 +359,13 @@ function resetProgress() {
 	progressLines.splice(0, progressLines.length);
 	progressDoneCount = 0;
 	progressQueuedCount = 0;
+	progressTarget = null;
 }
 
 let progressStartedAt = 0;
+// The { integration, account } whose bulk sync the progress panel follows. Status
+// checks keep asking about it even after the user switches integration or store.
+let progressTarget = null;
 let statusPoll = null;
 
 function stopStatusPoll() {
@@ -303,6 +384,7 @@ function onProgressDone() {
 	progressDoneCount += 1;
 	if (progressDoneCount >= progressQueuedCount) {
 		progressRunning.value = false;
+		progressTarget = null;
 		busy.value = false;
 		stopStatusPoll();
 		fetchRows();
@@ -333,31 +415,48 @@ function listenProgress(eventName) {
 	);
 }
 
-function startProgressListener(eventName) {
+function startProgressListener(eventName, target) {
 	resetProgress();
 	progressStartedAt = Date.now();
+	progressTarget = target;
 	startStatusPoll();
 	listenProgress(eventName);
 }
 
 async function fetchSyncStatus() {
-	if (!integration.value) return;
+	// While a sync runs, only the store that started it can say it has finished.
+	// Selected-product syncs (no target) are ended by their realtime `done` events.
+	const tracking = progressRunning.value;
+	if (tracking && !progressTarget) return null;
+	const target = tracking
+		? progressTarget
+		: { integration: integration.value, account: account.value };
+	if (!target.integration) return null;
 	try {
-		const status = await syncStatusResource.submit({ integration: integration.value });
-		if (status?.running && !progressRunning.value) {
-			// Resume an in-flight bulk sync after a page reload.
-			busy.value = true;
-			progressVisible.value = true;
-			progressRunning.value = true;
-			startProgressListener(status.event);
-		} else if (
-			!status?.running &&
-			progressRunning.value &&
-			Date.now() - progressStartedAt > 3000
-		) {
+		const status = await syncStatusResource.submit({
+			integration: target.integration,
+			...accountParams(target.account),
+		});
+		if (!tracking) {
+			// The user switched integration or store while the request was in flight.
+			if (target.integration !== integration.value || target.account !== account.value)
+				return null;
+			if (status?.running && !progressRunning.value) {
+				// Resume an in-flight bulk sync after a page reload.
+				busy.value = true;
+				progressVisible.value = true;
+				progressRunning.value = true;
+				startProgressListener(status.event, target);
+			}
+			return status;
+		}
+		// The sync ended or another one started while the request was in flight.
+		if (!progressRunning.value || progressTarget !== target) return null;
+		if (!status?.running && Date.now() - progressStartedAt > 3000) {
 			// Server says nothing is running (worker stopped/killed): stop waiting.
 			busy.value = false;
 			progressRunning.value = false;
+			progressTarget = null;
 			stopStatusPoll();
 			progressLines.push({
 				text: "Sync finished. If no progress was shown, check the Integration Log for the result.",
@@ -374,7 +473,7 @@ async function fetchSyncStatus() {
 	}
 }
 
-function handleBulkQueued(result) {
+function handleBulkQueued(result, target) {
 	if (!result || result.status === "Busy") {
 		toast.warning(result?.message || "A product sync is already running.");
 		return;
@@ -382,7 +481,7 @@ function handleBulkQueued(result) {
 	busy.value = true;
 	progressVisible.value = true;
 	progressRunning.value = true;
-	startProgressListener(result.event);
+	startProgressListener(result.event, target);
 }
 
 const showSyncAllDialog = ref(false);
@@ -394,14 +493,16 @@ function confirmSyncAll() {
 
 async function syncAllItems() {
 	showSyncAllDialog.value = false;
+	const target = { integration: integration.value, account: account.value };
 	try {
 		const result = await syncAllResource.submit({
-			integration: integration.value,
+			integration: target.integration,
+			...accountParams(target.account),
 			search: search.value || null,
 			sync_filter: syncFilter.value || null,
 			force_full: forceFull.value ? 1 : 0,
 		});
-		handleBulkQueued(result);
+		handleBulkQueued(result, target);
 	} catch (err) {
 		toast.error(errMessage(err));
 	}
@@ -411,27 +512,44 @@ async function syncSelected() {
 	if (!selection.value.length) return;
 	// Group the selection by each row's own integration so "All Integrations"
 	// mode can sync across providers (the API takes one integration per call).
-	const labels = {};
-	const idsByIntegration = {};
+	// Labels are kept per integration too: product IDs are only unique within
+	// one provider, so a shared map would let one provider's label overwrite another's.
+	const groupsByIntegration = {};
 	for (const row of rows.value) {
 		if (!selection.value.includes(rowKey(row))) continue;
-		labels[row.id] = row.name || row.id;
 		const target = row.integration || integration.value;
-		if (target) (idsByIntegration[target] ||= []).push(row.id);
+		if (!target) continue;
+		// Multi-store providers take one account per call, so group by store too.
+		const acct = row.account || account.value || "";
+		const storeLabel =
+			row.account_label || (acct === account.value ? accountLabel.value : acct);
+		const group = (groupsByIntegration[`${target}|${acct}`] ||= {
+			target,
+			acct,
+			storeLabel,
+			ids: [],
+			labels: {},
+		});
+		group.ids.push(row.id);
+		group.labels[row.id] = row.name || row.id;
 	}
-	const groups = Object.entries(idsByIntegration);
+	const groups = Object.values(groupsByIntegration);
 	if (!groups.length) return;
 	resetProgress();
 	try {
-		for (const [target, productIds] of groups) {
+		for (const { target, acct, storeLabel, ids: productIds, labels } of groups) {
 			const result = await syncSelectedResource.submit({
 				integration: target,
+				...accountParams(acct),
 				product_ids: productIds,
 				labels,
 			});
 			if (!result || result.status === "Busy") {
 				toast.warning(
-					result?.message || `A product sync is already running for ${target}.`,
+					result?.message ||
+						`A product sync is already running for ${target}${
+							storeLabel ? ` (${storeLabel})` : ""
+						}.`,
 				);
 				continue;
 			}
@@ -456,6 +574,7 @@ async function syncSingle(product) {
 	try {
 		const result = await syncProductResource.submit({
 			integration: target,
+			...accountParams(product.account || account.value),
 			product_id: product.id,
 		});
 		if (result?.ok) {
@@ -573,6 +692,20 @@ const listColumns = computed(() => {
 									:options="providerOptions"
 								/>
 							</div>
+							<div v-if="integration && accountOptions.length > 1" class="w-44">
+								<FormControl
+									v-model="account"
+									type="select"
+									:options="accountOptions"
+								/>
+							</div>
+							<Badge
+								v-else-if="integration && accountOptions.length === 1"
+								:label="`Store: ${accountLabel}`"
+								theme="gray"
+								variant="subtle"
+								size="sm"
+							/>
 							<Badge
 								v-if="currentProvider"
 								:label="currentProvider.enabled ? 'Enabled' : 'Disabled'"
@@ -653,7 +786,10 @@ const listColumns = computed(() => {
 									{{ pageIndex * Number(pageSize) + index + 1 }}
 								</div>
 								<div v-if="!integration" class="truncate text-ink-gray-6">
-									{{ item.provider_label || item.integration }}
+									{{ item.provider_label || item.integration
+									}}<template v-if="item.account_label">
+										· {{ item.account_label }}</template
+									>
 								</div>
 								<div class="min-w-0">
 									<div
@@ -709,6 +845,7 @@ const listColumns = computed(() => {
 					<div v-if="integration">
 						<SyncPanel
 							:provider="currentProvider"
+							:account="currentAccount"
 							:stats="stats"
 							:busy="busy"
 							:syncing-all="syncAllResource.loading"
@@ -739,8 +876,9 @@ const listColumns = computed(() => {
 		<!-- Sync All confirmation (inline Dialog, so it portals inside the island) -->
 		<Dialog v-model="showSyncAllDialog" title="Sync all items?">
 			<p class="text-p-base text-ink-gray-7">
-				Every product from {{ currentProvider?.label || integration }} matching the current
-				filters will be queued for synchronization.
+				Every product from {{ currentProvider?.label || integration
+				}}<template v-if="accountLabel"> ({{ accountLabel }})</template> matching the
+				current filters will be queued for synchronization.
 				<template v-if="currentProvider?.supports_incremental">
 					Products unchanged since their last sync are skipped.
 				</template>

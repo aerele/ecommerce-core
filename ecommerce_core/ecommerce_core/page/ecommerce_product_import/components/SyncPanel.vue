@@ -1,10 +1,11 @@
 <script setup>
 import { computed } from "vue";
 import { Button, Badge } from "frappe-ui";
-import { doctypeRoute } from "../../../../ui/island/desk_links.js";
+import { doctypeRoute, formLink } from "../../../../ui/island/desk_links.js";
 
 const props = defineProps({
 	provider: { type: Object, required: true },
+	account: { type: Object, default: null },
 	stats: { type: Object, default: null },
 	busy: { type: Boolean, default: false },
 	syncingAll: { type: Boolean, default: false },
@@ -12,11 +13,17 @@ const props = defineProps({
 
 defineEmits(["sync-all"]);
 
-// ERPNext form routes resolve under /app inside the desk shell.
-const settingsRoute = computed(() => doctypeRoute(props.provider?.settings_doctype));
+// Multi-account connectors keep one settings record per account, so the
+// selected account's record is opened; otherwise the settings doctype.
+const settingsRoute = computed(() => {
+	const doctype = props.provider?.settings_doctype;
+	if (!doctype) return null;
+	if (props.account?.name) return formLink(doctype, props.account.name);
+	return doctypeRoute(doctype);
+});
 
 function openSettings() {
-	if (settingsRoute.value) window.location.href = settingsRoute.value;
+	if (settingsRoute.value) window.open(settingsRoute.value, "_blank", "noopener");
 }
 </script>
 
@@ -31,6 +38,9 @@ function openSettings() {
 				size="sm"
 			/>
 		</div>
+		<p v-if="account" class="mt-1 text-xs text-ink-gray-5">
+			Store: {{ account.label || account.name }}
+		</p>
 
 		<div class="mt-3 flex items-center gap-2">
 			<Button

@@ -12,7 +12,9 @@ from frappe.utils import cint
 from ecommerce_core.dashboard.queries import like_pattern
 
 
-def get_sync_status_map(integration: str, product_ids: list[str]) -> dict[str, dict]:
+def get_sync_status_map(
+	integration: str, product_ids: list[str], account_filter: tuple[str, str] | None = None
+) -> dict[str, dict]:
 	"""Map provider product ids to their sync state in one batched query."""
 	ids = [pid for pid in product_ids if pid]
 	if not ids:
@@ -20,7 +22,9 @@ def get_sync_status_map(integration: str, product_ids: list[str]) -> dict[str, d
 
 	rows = frappe.get_all(
 		"Ecommerce Item",
-		filters={"integration": integration, "integration_item_code": ["in", ids]},
+		filters=_with_account(
+			{"integration": integration, "integration_item_code": ["in", ids]}, account_filter
+		),
 		fields=["integration_item_code", "erpnext_item_code", "has_variants", "item_synced_on"],
 		order_by="has_variants desc, creation asc",
 	)
@@ -49,10 +53,12 @@ def get_sync_status_map(integration: str, product_ids: list[str]) -> dict[str, d
 	return status_map
 
 
-def attach_sync_status(integration: str, products: list[dict]) -> list[dict]:
+def attach_sync_status(
+	integration: str, products: list[dict], account_filter: tuple[str, str] | None = None
+) -> list[dict]:
 	"""Attach synced/sync_state/erpnext_item_code/item_synced_on to provider rows."""
 	products = products or []
-	status_map = get_sync_status_map(integration, [p.get("id") for p in products])
+	status_map = get_sync_status_map(integration, [p.get("id") for p in products], account_filter)
 
 	for product in products:
 		entry = status_map.get(product.get("id"))
@@ -65,10 +71,12 @@ def attach_sync_status(integration: str, products: list[dict]) -> list[dict]:
 	return products
 
 
-def get_stats(integration: str, provider_count: int | None = None) -> dict:
+def get_stats(
+	integration: str, provider_count: int | None = None, account_filter: tuple[str, str] | None = None
+) -> dict:
 	"""Generic Product Sync statistics for one integration."""
-	mapped = _count_distinct_mapped(integration)
-	synced = _count_distinct_synced(integration)
+	mapped = _count_distinct_mapped(integration, account_filter)
+	synced = _count_distinct_synced(integration, account_filter)
 
 	return {
 		"provider_count": provider_count,
@@ -83,6 +91,7 @@ def list_mapped_products(
 	cursor: str | None = None,
 	search: str | None = None,
 	synced_only: bool = False,
+	account_filter: tuple[str, str] | None = None,
 ) -> dict:
 	"""Product listing built from Ecommerce Item mappings (no remote call)."""
 	limit = cint(limit) or 20
@@ -90,7 +99,7 @@ def list_mapped_products(
 
 	ei = frappe.qb.DocType("Ecommerce Item")
 	item_dt = frappe.qb.DocType("Item")
-	where = ei.integration == integration
+	where = _account_where(ei, ei.integration == integration, account_filter)
 	if synced_only:
 		where = where & ei.erpnext_item_code.isin(frappe.qb.from_(item_dt).select(item_dt.name))
 	if search:
@@ -127,10 +136,13 @@ def list_mapped_products(
 	# Variants share integration_item_code; list their SKUs for the popover.
 	variant_rows = frappe.get_all(
 		"Ecommerce Item",
-		filters={
-			"integration": integration,
-			"integration_item_code": ["in", [p.integration_item_code for p in page] or [""]],
-		},
+		filters=_with_account(
+			{
+				"integration": integration,
+				"integration_item_code": ["in", [p.integration_item_code for p in page] or [""]],
+			},
+			account_filter,
+		),
 		fields=["integration_item_code", "sku"],
 	)
 	variants: dict[str, list[dict]] = {}
@@ -163,18 +175,32 @@ def _decode_offset_cursor(cursor: str | None) -> int:
 		return 0
 
 
-def _count_distinct_mapped(integration: str) -> int:
+def _with_account(filters: dict, account_filter: tuple[str, str] | None) -> dict:
+	"""Add the ``(fieldname, value)`` store-account condition to a get_all filter dict."""
+	if account_filter:
+		filters[account_filter[0]] = account_filter[1]
+	return filters
+
+
+def _account_where(ei, where, account_filter: tuple[str, str] | None):
+	"""AND the ``(fieldname, value)`` store-account condition onto a query-builder criterion."""
+	if account_filter:
+		where = where & (ei[account_filter[0]] == account_filter[1])
+	return where
+
+
+def _count_distinct_mapped(integration: str, account_filter: tuple[str, str] | None = None) -> int:
 	"""Distinct provider products with an Ecommerce Item mapping (variants share one id)."""
 	ei = frappe.qb.DocType("Ecommerce Item")
 	query = (
 		frappe.qb.from_(ei)
-		.where(ei.integration == integration)
+		.where(_account_where(ei, ei.integration == integration, account_filter))
 		.select(Count(ei.integration_item_code).distinct())
 	)
 	return _run_count(query)
 
 
-def _count_distinct_synced(integration: str) -> int:
+def _count_distinct_synced(integration: str, account_filter: tuple[str, str] | None = None) -> int:
 	"""Distinct mapped provider products whose ERPNext Item exists."""
 	ei = frappe.qb.DocType("Ecommerce Item")
 	item = frappe.qb.DocType("Item")
@@ -182,7 +208,7 @@ def _count_distinct_synced(integration: str) -> int:
 		frappe.qb.from_(ei)
 		.join(item)
 		.on(ei.erpnext_item_code == item.name)
-		.where(ei.integration == integration)
+		.where(_account_where(ei, ei.integration == integration, account_filter))
 		.select(Count(ei.integration_item_code).distinct())
 	)
 	return _run_count(query)

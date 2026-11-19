@@ -23,7 +23,13 @@ from ecommerce_core.providers.base import BaseProviderAdapter
 from ecommerce_core.providers.registry import load_hook_providers
 
 REQUIRED_ADAPTER_METHODS = ("is_enabled", "sync_product")
-OPTIONAL_ADAPTER_METHODS = ("get_products", "get_provider_count", "sync_all", "get_sync_status")
+OPTIONAL_ADAPTER_METHODS = (
+	"get_products",
+	"get_provider_count",
+	"sync_all",
+	"get_sync_status",
+	"get_accounts",
+)
 
 LOGGER = "ecommerce_core.product_import"
 
@@ -55,6 +61,37 @@ class ProductImportProvider:
 	def event_name(self) -> str:
 		"""Realtime event name the page subscribes to for this provider's progress."""
 		return f"{EVENT_NAME_PREFIX}.{self.slug}"
+
+	@property
+	def account_field(self) -> str | None:
+		"""Ecommerce Item field holding the store account, when the connector is multi-store."""
+		return getattr(self.adapter, "account_field", None)
+
+	def get_accounts(self) -> list[dict]:
+		"""Enabled store accounts ``[{"name", "label"}]``; empty for single-store connectors."""
+		if not self.implements("get_accounts"):
+			return []
+		try:
+			return list(self.adapter.get_accounts() or [])
+		except Exception:
+			frappe.logger(LOGGER).error(
+				f"get_accounts() failed for provider {self.integration}: {frappe.get_traceback()}"
+			)
+			return []
+
+	def job_name_for(self, account: str | None = None) -> str:
+		"""Bulk job name (and lock identity) scoped to one store account when given."""
+		return f"{self.job_name}.{get_slug(account)}" if account else self.job_name
+
+	def event_name_for(self, account: str | None = None) -> str:
+		"""Realtime progress event scoped to one store account when given."""
+		return f"{self.event_name}.{get_slug(account)}" if account else self.event_name
+
+	def account_filter(self, account: str | None = None) -> tuple[str, str] | None:
+		"""``(fieldname, value)`` Ecommerce Item condition for an account, else None."""
+		if account and self.account_field:
+			return (self.account_field, account)
+		return None
 
 	@property
 	def enabled(self) -> bool:
@@ -108,6 +145,7 @@ class ProductImportProvider:
 			"can_list_products": self.can_list_products,
 			"supports_incremental": self.supports_incremental,
 			"supports_search": self._supports("supports_search", "get_products"),
+			"accounts": self.get_accounts(),
 		}
 
 

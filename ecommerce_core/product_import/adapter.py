@@ -15,26 +15,35 @@ class ProductImportAdapter(BaseProviderAdapter):
 
 	__contract__ = True
 
+	#: Ecommerce Item field holding the store account, for multi-store connectors.
+	account_field: str | None = None
+
 	@abstractmethod
-	def sync_product(self, product_id: str) -> dict:
+	def sync_product(self, product_id: str, account: str | None = None) -> dict:
 		"""Create or update the ERPNext Item(s) for one remote product."""
 
 	# -- optional -----------------------------------------------------------------
 
-	def get_products(self, limit: int, cursor: str | None = None, search: str | None = None) -> dict:
+	def get_products(
+		self, limit: int, cursor: str | None = None, search: str | None = None, account: str | None = None
+	) -> dict:
 		"""One page of the remote catalog."""
 		raise NotImplementedError
 
-	def get_provider_count(self) -> int:
+	def get_provider_count(self, account: str | None = None) -> int:
 		"""Total number of remote products (for the stats cards)."""
 		raise NotImplementedError
 
-	def sync_all(self, search: str | None = None) -> dict:
+	def sync_all(self, search: str | None = None, account: str | None = None) -> dict:
 		"""Custom bulk job. Return ``{"status": "Queued", ...}``."""
 		raise NotImplementedError
 
-	def get_sync_status(self) -> dict:
+	def get_sync_status(self, account: str | None = None) -> dict:
 		"""``{"running": bool}`` for adapters that manage their own bulk job."""
+		raise NotImplementedError
+
+	def get_accounts(self) -> list[dict]:
+		"""Enabled store accounts as ``[{"name", "label"}]`` for multi-store connectors."""
 		raise NotImplementedError
 
 	def get_product_updated_at(self, product: dict):
