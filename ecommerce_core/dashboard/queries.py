@@ -181,7 +181,14 @@ def _row_details(order, extra_fields, invoice, invoice_fields) -> list[dict]:
 	]
 
 
-def _pending_invoice_query(id_field: str, cod_field: str | None, search: str | None, status: str | None):
+def _pending_invoice_query(
+	id_field: str,
+	cod_field: str | None,
+	search: str | None,
+	status: str | None,
+	filter_fields: dict[str, str] | None = None,
+	filters: dict[str, str] | None = None,
+):
 	"""Shared pending-payment query: submitted, non-return invoices with money outstanding."""
 	si = frappe.qb.DocType("Sales Invoice")
 	query = frappe.qb.from_(si).where(
@@ -201,6 +208,10 @@ def _pending_invoice_query(id_field: str, cod_field: str | None, search: str | N
 		if cod_field:
 			query = query.where(si[cod_field] == 0)
 
+	for key, fieldname in (filter_fields or {}).items():
+		if (filters or {}).get(key) and _has_field("Sales Invoice", fieldname):
+			query = query.where(si[fieldname] == filters[key])
+
 	if search and search.strip():
 		like = like_pattern(search)
 		query = query.where(si.name.like(like) | si[id_field].like(like) | si.customer_name.like(like))
@@ -213,13 +224,17 @@ def pending_sales_invoices(
 	search: str | None = None,
 	status: str | None = None,
 	cod_field: str | None = None,
+	extra_fields: list[tuple[str, str]] | None = None,
+	filter_fields: dict[str, str] | None = None,
+	filters: dict[str, str] | None = None,
 ) -> list[dict]:
 	"""Submitted Sales Invoices with money outstanding, newest first, in the payment-row shape."""
 	if not _has_field("Sales Invoice", id_field):
 		return []
 	cod_field = cod_field if _has_field("Sales Invoice", cod_field) else None
+	extra_fields = _existing_fields("Sales Invoice", extra_fields)
 
-	si, query = _pending_invoice_query(id_field, cod_field, search, status)
+	si, query = _pending_invoice_query(id_field, cod_field, search, status, filter_fields, filters)
 	if query is None:
 		return []
 
@@ -233,6 +248,7 @@ def pending_sales_invoices(
 		si.status,
 		si.due_date,
 		si.creation,
+		*(si[fieldname].as_(fieldname) for fieldname, _label in extra_fields),
 	]
 	if cod_field:
 		fields.append(si[cod_field].as_("is_cod"))
@@ -264,31 +280,50 @@ def pending_sales_invoices(
 				"indicator": PAYMENT_INDICATORS.get(status_label, "orange"),
 				"note": note,
 				"created": r.creation,
+				"details": _detail_facts(r, extra_fields),
 			}
 		)
 	return result
 
 
 def count_pending_sales_invoices(
-	id_field: str, search: str | None = None, status: str | None = None, cod_field: str | None = None
+	id_field: str,
+	search: str | None = None,
+	status: str | None = None,
+	cod_field: str | None = None,
+	filter_fields: dict[str, str] | None = None,
+	filters: dict[str, str] | None = None,
 ) -> int:
 	"""Row count for :func:`pending_sales_invoices`; 0 when the id/cod fields are missing."""
 	if not _has_field("Sales Invoice", id_field):
 		return 0
 	cod_field = cod_field if _has_field("Sales Invoice", cod_field) else None
-	_si, query = _pending_invoice_query(id_field, cod_field, search, status)
+	_si, query = _pending_invoice_query(id_field, cod_field, search, status, filter_fields, filters)
 	if query is None:
 		return 0
 	return query.select(Count("*")).run()[0][0]
 
 
-def pending_sales_invoice_summary(id_field: str) -> list[dict]:
+def pending_sales_invoice_summary(
+	id_field: str,
+	filter_fields: dict[str, str] | None = None,
+	filters: dict[str, str] | None = None,
+) -> list[dict]:
 	"""Outstanding amount and invoice count per currency."""
 	if not _has_field("Sales Invoice", id_field):
 		return []
-	si, query = _pending_invoice_query(id_field, None, None, None)
+	si, query = _pending_invoice_query(id_field, None, None, None, filter_fields, filters)
 	return (
 		query.select(si.currency, Sum(si.outstanding_amount).as_("amount"), Count("*").as_("count"))
 		.groupby(si.currency)
 		.run(as_dict=True)
 	)
+
+
+def _detail_facts(row, field_pairs) -> list[dict]:
+	"""Non-empty extra facts for a row: [{key, label, value}]."""
+	return [
+		{"key": fieldname, "label": label, "value": row.get(fieldname)}
+		for fieldname, label in field_pairs
+		if row.get(fieldname) not in (None, "")
+	]

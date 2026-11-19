@@ -25,6 +25,11 @@ class TestDashboardQueries(IntegrationTestCase):
 		details = queries._row_details(order, [("customer_name", "Customer"), ("blank", "Blank")], None, [])
 		self.assertEqual(details, [{"key": "customer_name", "label": "Customer", "value": "Ravi"}])
 
+	def test_detail_facts_carry_keys_and_drop_empty_values(self):
+		row = frappe._dict(customer_name="Ravi", blank="")
+		facts = queries._detail_facts(row, [("customer_name", "Customer"), ("blank", "Blank")])
+		self.assertEqual(facts, [{"key": "customer_name", "label": "Customer", "value": "Ravi"}])
+
 
 class TestDashboardAPI(IntegrationTestCase):
 	def test_parse_filters(self):
@@ -57,6 +62,52 @@ class TestDashboardAPI(IntegrationTestCase):
 	def test_unknown_section_is_rejected(self):
 		with self.assertRaises(frappe.exceptions.ValidationError):
 			api.get_section("no-such-section")
+
+	def _mapping_provider(self, integration="acme", item_field="no_such_field"):
+		from ecommerce_core.dashboard.adapter import DashboardAdapter
+		from ecommerce_core.dashboard.registry import Provider
+
+		class Mapping(DashboardAdapter):
+			def is_enabled(self):
+				return True
+
+			def get_order_filter_options(self):
+				return [{"key": "shop", "label": "Shop", "options": [("a", "a")]}]
+
+			def get_filter_field_map(self):
+				return {"shop": {"Sales Order": "customer_name", "Ecommerce Item": item_field}}
+
+		provider = Provider(integration=integration, label="Acme", settings_doctype=None)
+		provider.adapter = Mapping()
+		provider.enabled = True
+		return provider
+
+	def test_filter_map_columns_skip_fields_the_doctype_lacks(self):
+		provider = self._mapping_provider()
+		self.assertEqual(
+			api._filter_map_columns(provider, "Sales Order"),
+			[{"key": "customer_name", "label": "Shop"}],
+		)
+		self.assertEqual(api._filter_map_columns(provider, "Ecommerce Item"), [])
+
+	def test_summary_tile_filters_and_clause_follow_the_field_map(self):
+		from ecommerce_core.dashboard.registry import Registry
+
+		provider = self._mapping_provider(item_field="integration")
+		registry = Registry(providers=[provider])
+
+		self.assertEqual(api._summary_tile_filters(registry, "acme", '{"shop": "a"}'), {"shop": "a"})
+		# Undeclared keys and the combined view carry no tile filters.
+		self.assertIsNone(api._summary_tile_filters(registry, "acme", '{"other": "x"}'))
+		self.assertIsNone(api._summary_tile_filters(registry, None, '{"shop": "a"}'))
+
+		ecom = frappe.qb.DocType("Ecommerce Item")
+		clause = api._tile_filter_clause(registry, "acme", {"shop": "a"}, "Ecommerce Item", ecom)
+		self.assertIsNotNone(clause)
+		# A doctype the map doesn't cover gets no clause.
+		self.assertIsNone(
+			api._tile_filter_clause(registry, "acme", {"shop": "a"}, "Item", frappe.qb.DocType("Item"))
+		)
 
 	def test_broken_warehouse_config_is_reported_not_hidden(self):
 		from ecommerce_core.dashboard.registry import Provider, Registry

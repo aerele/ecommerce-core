@@ -149,8 +149,12 @@ const pushStockRes = createResource({
 // ----- data loading -----
 
 function loadSummary() {
+	// Tiles follow the orders section's extra filters (e.g. the Shopify shop).
 	return summaryRes
-		.submit({ integration: integration.value })
+		.submit({
+			integration: integration.value,
+			filters: JSON.stringify(sectionState.orders.filters || {}),
+		})
 		.then((data) => {
 			summary.value = data;
 			if (
@@ -380,7 +384,7 @@ function sectionCount(key) {
 	return sectionData(key).total || 0;
 }
 
-// Connector-declared extra columns (orders only; harmless for other sections).
+// Connector-declared extra columns, slotted between each widget's base and tail.
 function detailColumns(key) {
 	return (sectionData(key).columns || []).map((c) => ({
 		key: c.key,
@@ -401,17 +405,21 @@ const ORDERS_TAIL_COLUMNS = [
 	{ key: "invoice", label: "Invoice", kind: "invoice" },
 	{ key: "created", label: "Created on", kind: "created" },
 ];
-const PAYMENTS_COLUMNS = [
+const PAYMENTS_BASE_COLUMNS = [
 	{ key: "invoice", label: "Invoice", kind: "payment-invoice" },
 	{ key: "party", label: "Customer", kind: "party" },
 	{ key: "outstanding", label: "Outstanding", kind: "amount" },
+];
+const PAYMENTS_TAIL_COLUMNS = [
 	{ key: "status", label: "Status", kind: "status" },
 	{ key: "created", label: "Created on", kind: "created" },
 ];
-const ITEMS_COLUMNS = [
+const ITEMS_BASE_COLUMNS = [
 	{ key: "item", label: "Item", kind: "item" },
 	{ key: "platform", label: "Platform", kind: "platform" },
 	{ key: "sku", label: "SKU", kind: "sku" },
+];
+const ITEMS_TAIL_COLUMNS = [
 	{ key: "actual", label: "On hand", kind: "qty", tone: "text-blue-700" },
 	{ key: "reserved", label: "Reserved for orders", kind: "qty", tone: "text-orange-700" },
 	{ key: "available", label: "Available to sell", kind: "qty" },
@@ -419,19 +427,21 @@ const ITEMS_COLUMNS = [
 	{ key: "synced", label: "Last inventory sync", kind: "synced" },
 	{ key: "push", label: "", kind: "push" },
 ];
-const LOGS_COLUMNS = [
+const LOGS_BASE_COLUMNS = [
 	{ key: "title", label: "Title", kind: "log-title" },
 	{ key: "status", label: "Status", kind: "log-status" },
 	{ key: "integration", label: "Integration", kind: "platform" },
-	{ key: "modified", label: "Updated on", kind: "created" },
 ];
+const LOGS_TAIL_COLUMNS = [{ key: "modified", label: "Updated on", kind: "created" }];
 
 function sectionColumns(key) {
-	if (key === "orders")
-		return [...ORDERS_BASE_COLUMNS, ...detailColumns(key), ...ORDERS_TAIL_COLUMNS];
-	if (key === "payments") return PAYMENTS_COLUMNS;
-	if (key === "items") return ITEMS_COLUMNS;
-	return LOGS_COLUMNS;
+	const columns = {
+		orders: [ORDERS_BASE_COLUMNS, ORDERS_TAIL_COLUMNS],
+		payments: [PAYMENTS_BASE_COLUMNS, PAYMENTS_TAIL_COLUMNS],
+		items: [ITEMS_BASE_COLUMNS, ITEMS_TAIL_COLUMNS],
+		logs: [LOGS_BASE_COLUMNS, LOGS_TAIL_COLUMNS],
+	}[key];
+	return [...columns[0], ...detailColumns(key), ...columns[1]];
 }
 
 function sectionCountLabel(key) {
@@ -461,6 +471,7 @@ function setFilter(key, filterKey, value) {
 	sectionState[key].filters[filterKey] = value || "";
 	sectionState[key].page = 1;
 	loadSection(key);
+	if (key === "orders") loadSummary();
 }
 
 function onSearch(key, value) {
@@ -519,6 +530,7 @@ function emptyText(key) {
 	const state = sectionState[key];
 	if (state.search) return `Nothing matches “${state.search}”.`;
 	if (state.status) return "Nothing with this status.";
+	if (Object.values(state.filters || {}).some(Boolean)) return "Nothing with this filter.";
 	return SECTIONS[key].empty;
 }
 

@@ -30,6 +30,19 @@ class DashboardAdapter(BaseProviderAdapter):
 		"""Extra dropdown filters for the orders widget."""
 		raise NotImplementedError
 
+	def get_payment_columns(self) -> list[dict]:
+		"""Extra columns for the pending-payments widget: [{key, label, width?}]."""
+		raise NotImplementedError
+
+	def get_filter_field_map(self) -> dict[str, dict[str, str]]:
+		"""Where each extra filter key also applies beyond the orders widget.
+
+		Returns {filter key: {doctype: fieldname}} for the doctypes the summary
+		tiles, items widget and sync logs read, so a filter picked in one widget
+		can scope the rest of the dashboard. Optional.
+		"""
+		raise NotImplementedError
+
 	def get_pending_payments(
 		self, limit: int, search: str | None = None, status: str | None = None
 	) -> list[dict]:
@@ -40,10 +53,19 @@ class DashboardAdapter(BaseProviderAdapter):
 		"""Total pending payments matching the filters, used for pagination."""
 		raise NotImplementedError
 
-	def get_pending_summary(self) -> list[dict]:
+	def get_pending_summary(self, filters: dict[str, str] | None = None) -> list[dict]:
 		"""Outstanding totals grouped by currency: [{currency, amount, count}]."""
 		raise NotImplementedError
 
 	def push_inventory(self, ecommerce_items: list[str]) -> str:
 		"""Queue a stock push for the given Ecommerce Item names; returns a user-facing message."""
+		raise NotImplementedError
+
+	def get_erpnext_warehouses(self) -> list[str]:
+		"""ERPNext warehouses behind this connector's stock.
+
+		Optional. Connectors whose settings are not a single doc (multi-store)
+		implement this to aggregate their warehouses; otherwise the settings
+		doctype's ``get_erpnext_warehouses()`` is used.
+		"""
 		raise NotImplementedError
