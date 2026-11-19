@@ -6,9 +6,10 @@ from datetime import date, datetime
 import frappe
 from frappe import _
 from frappe.query_builder import DocType, Order
-from frappe.query_builder.functions import Count, Sum
+from frappe.query_builder.functions import Count, IfNull, Sum
 from frappe.utils import add_days, cint, cstr, now_datetime
 from frappe.utils.nestedset import get_descendants_of
+from pypika import Case
 
 from ecommerce_core.dashboard.queries import cache_key_for, like_pattern
 from ecommerce_core.dashboard.registry import Provider, Registry, call_adapter, load_registry
@@ -35,6 +36,7 @@ def get_summary(integration: str | None = None) -> dict:
 	registry = load_registry()
 	integration = integration or None
 	problems = list(registry.problems)
+	problems += _warehouse_problems(registry, integration)
 	scoped = registry.scoped(integration)
 	problems += [p.problem for p in scoped if p.problem]
 
@@ -72,7 +74,12 @@ def get_summary(integration: str | None = None) -> dict:
 			entry["amount"] += row["amount"] or 0
 			entry["count"] += row["count"] or 0
 
-	stock_counts = _stock_counts(_item_rows(registry, integration, None))
+	integrations = _integrations_in_scope(registry, integration)
+	stock_counts = {"out": 0, "low": 0}
+	for integ in integrations:
+		counts = _items_counts_sql(integ, registry.get(integ))
+		stock_counts["out"] += counts.get("out", 0)
+		stock_counts["low"] += counts.get("low", 0)
 
 	return {
 		"providers": [p.as_dict() for p in registry.providers],
@@ -130,6 +137,10 @@ def push_stock(ecommerce_item: str) -> str:
 	provider = load_registry().get(integration)
 	if not provider or not provider.enabled or not provider.adapter.implements("push_inventory"):
 		frappe.throw(_("{0} does not support pushing stock from the dashboard.").format(integration))
+	if _warehouses(provider) == []:
+		frappe.throw(
+			_("{0} has no valid warehouse configuration; fix it before pushing stock.").format(integration)
+		)
 	return provider.adapter.push_inventory([ecommerce_item])
 
 
@@ -333,12 +344,28 @@ def _payments_section(registry, integration, search, status, page, page_size):
 
 def _items_section(registry, integration, search, status, page, page_size):
 	"""One page of item rows after stock-status filtering; "counts" cover the full unfiltered set."""
+	problems = _warehouse_problems(registry, integration)
+	integrations = _integrations_in_scope(registry, integration)
+	if len(integrations) == 1:
+		# Single connector: filter, sort and paginate in SQL; cache only compact counts.
+		integ = integrations[0]
+		provider = registry.get(integ)
+		counts = _items_counts_sql(integ, provider)
+		rows = _items_rows_sql(integ, provider, search, status, page, page_size)
+		total = counts[status] if status in STOCK_ORDER else counts["all"]
+		return {"rows": rows, "total": total, "counts": counts, "problems": problems}
+
 	rows = _item_rows(registry, integration, search)
 	counts = _stock_counts(rows)
 	if status in STOCK_ORDER:
 		rows = [r for r in rows if r["stock_status"] == status]
 	start = (page - 1) * page_size
-	return {"rows": rows[start : start + page_size], "total": len(rows), "counts": counts, "problems": []}
+	return {
+		"rows": rows[start : start + page_size],
+		"total": len(rows),
+		"counts": counts,
+		"problems": problems,
+	}
 
 
 def _logs_section(registry, integration, search, status, page, page_size):
@@ -394,15 +421,19 @@ def _integrations_in_scope(registry: Registry, integration: str | None) -> list[
 
 
 def _warehouses(provider: Provider | None) -> list[str] | None:
-	"""Leaf + group warehouses configured in the connector's settings; None means all warehouses."""
+	"""Leaf + group warehouses configured in the connector's settings.
+
+	None means all warehouses on purpose (connector has no settings); an empty
+	list means the warehouse configuration is broken and no stock is trusted.
+	"""
 	if not provider or not provider.settings_doctype:
 		return None
 	try:
 		configured = frappe.get_cached_doc(provider.settings_doctype).get_erpnext_warehouses()
 	except Exception:
-		return None
+		return []
 	if not configured:
-		return None
+		return []
 
 	warehouses = set(configured)
 	groups = frappe.get_all(
@@ -411,6 +442,172 @@ def _warehouses(provider: Provider | None) -> list[str] | None:
 	for warehouse in groups:
 		warehouses.update(get_descendants_of("Warehouse", warehouse))
 	return list(warehouses)
+
+
+def _warehouse_problems(registry: Registry, integration: str | None) -> list[str]:
+	"""Notices for connectors whose warehouse configuration cannot be trusted."""
+	problems = []
+	for provider in registry.scoped(integration):
+		if not provider.settings_doctype:
+			continue
+		try:
+			configured = frappe.get_cached_doc(provider.settings_doctype).get_erpnext_warehouses()
+		except Exception:
+			problems.append(
+				_("{0}: warehouse settings could not be read; stock and pushes are paused.").format(
+					provider.label
+				)
+			)
+			continue
+		if not configured:
+			problems.append(
+				_("{0}: no ERPNext warehouses configured; stock and pushes are paused.").format(
+					provider.label
+				)
+			)
+	return problems
+
+
+ITEMS_COUNTS_TTL_SECONDS = 60
+
+
+def _items_status_expr(bin_agg, reorder_agg, item):
+	"""SQL stock-status expression matching the Python semantics."""
+	available = IfNull(bin_agg.actual, 0) - IfNull(bin_agg.reserved, 0)
+	return (
+		Case()
+		.when(IfNull(item.is_stock_item, 0) == 0, "na")
+		.when(available <= 0, "out")
+		.when((IfNull(reorder_agg.level, 0) > 0) & (available <= IfNull(reorder_agg.level, 0)), "low")
+		.else_("in")
+	)
+
+
+def _items_order_expr(status_expr):
+	"""Sort key matching STOCK_ORDER (out, low, in, na)."""
+	return (
+		Case()
+		.when(status_expr == "out", 0)
+		.when(status_expr == "low", 1)
+		.when(status_expr == "in", 2)
+		.else_(3)
+	)
+
+
+def _items_base(integration: str, provider, search: str | None):
+	"""Mapped items joined with their warehouse-scoped stock and reorder level."""
+	ecom = DocType("Ecommerce Item")
+	item = DocType("Item")
+	bin_ = DocType("Bin")
+	reorder = DocType("Item Reorder")
+	warehouses = _warehouses(provider)
+
+	bin_agg = (
+		frappe.qb.from_(bin_)
+		.select(
+			bin_.item_code,
+			Sum(bin_.actual_qty).as_("actual"),
+			Sum(bin_.reserved_qty).as_("reserved"),
+		)
+		.groupby(bin_.item_code)
+	)
+	reorder_agg = (
+		frappe.qb.from_(reorder)
+		.select(reorder.parent, Sum(reorder.warehouse_reorder_level).as_("level"))
+		.where(reorder.parenttype == "Item")
+		.groupby(reorder.parent)
+	)
+	if warehouses is not None:
+		# None: all warehouses on purpose; []: broken configuration, so no stock is trusted.
+		# An empty isin() renders invalid SQL, so a broken config matches no warehouse.
+		scope = warehouses or ["-"]
+		bin_agg = bin_agg.where(bin_.warehouse.isin(scope))
+		reorder_agg = reorder_agg.where(reorder.warehouse.isin(scope))
+
+	query = (
+		frappe.qb.from_(ecom)
+		.left_join(item)
+		.on(item.name == ecom.erpnext_item_code)
+		.left_join(bin_agg)
+		.on(bin_agg.item_code == ecom.erpnext_item_code)
+		.left_join(reorder_agg)
+		.on(reorder_agg.parent == ecom.erpnext_item_code)
+		.where((ecom.integration == integration) & (ecom.has_variants == 0))
+	)
+	if search:
+		like = like_pattern(search)
+		query = query.where(
+			ecom.erpnext_item_code.like(like)
+			| item.item_name.like(like)
+			| ecom.sku.like(like)
+			| ecom.integration_item_code.like(like)
+		)
+	return query, bin_agg, reorder_agg, item
+
+
+def _items_counts_sql(integration: str, provider) -> dict:
+	"""Stock-status counts for one integration; cached as compact totals only."""
+	cache_key = f"ecommerce_core:dashboard_item_counts:{integration}"
+	if (counts := frappe.cache.get_value(cache_key)) is not None:
+		return counts
+	query, bin_agg, reorder_agg, item = _items_base(integration, provider, None)
+	status_expr = _items_status_expr(bin_agg, reorder_agg, item)
+	by_status = dict(query.select(status_expr.as_("status"), Count("*")).groupby(status_expr).run())
+	counts = {"all": sum(by_status.values())}
+	for key in ("in", "low", "out", "na"):
+		counts[key] = by_status.get(key, 0)
+	frappe.cache.set_value(cache_key, counts, expires_in_sec=ITEMS_COUNTS_TTL_SECONDS)
+	return counts
+
+
+def _items_rows_sql(integration: str, provider, search, status, page, page_size) -> list[dict]:
+	"""One page of item rows with filtering, sorting and pagination done in SQL."""
+	ecom = DocType("Ecommerce Item")
+	query, bin_agg, reorder_agg, item = _items_base(integration, provider, search)
+	status_expr = _items_status_expr(bin_agg, reorder_agg, item)
+	if status in STOCK_ORDER:
+		query = query.where(status_expr == status)
+	available = (IfNull(bin_agg.actual, 0) - IfNull(bin_agg.reserved, 0)).as_("available")
+
+	rows = (
+		query.select(
+			ecom.name,
+			ecom.erpnext_item_code.as_("item_code"),
+			ecom.integration_item_code,
+			ecom.sku,
+			ecom.inventory_synced_on,
+			item.item_name,
+			item.is_stock_item,
+			IfNull(bin_agg.actual, 0).as_("actual"),
+			IfNull(bin_agg.reserved, 0).as_("reserved"),
+			available,
+			IfNull(reorder_agg.level, 0).as_("reorder_level"),
+			status_expr.as_("stock_status"),
+		)
+		.orderby(_items_order_expr(status_expr), available, ecom.erpnext_item_code)
+		.limit(page_size)
+		.offset((page - 1) * page_size)
+		.run(as_dict=True)
+	)
+	can_push = bool(provider and provider.enabled and provider.adapter.implements("push_inventory"))
+	return [
+		{
+			"name": r.name,
+			"integration": integration,
+			"platform": provider.label if provider else integration,
+			"item_code": r.item_code,
+			"item_name": r.item_name,
+			"sku": r.sku or r.integration_item_code,
+			"actual": r.actual or 0,
+			"reserved": r.reserved or 0,
+			"available": r.available or 0,
+			"reorder_level": r.reorder_level or 0,
+			"stock_status": r.stock_status,
+			"inventory_synced_on": r.inventory_synced_on,
+			"can_push": can_push and bool(r.is_stock_item),
+		}
+		for r in rows
+	]
 
 
 def _item_rows(registry: Registry, integration: str | None, search: str | None) -> list[dict]:

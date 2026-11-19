@@ -108,20 +108,29 @@ def _lock_owner(provider: ProductImportProvider) -> str | None:
 	return value
 
 
-def _refresh_lock(provider: ProductImportProvider, token: str | None = None) -> None:
-	"""Heartbeat: keep the lock alive while the job runs. A killed worker stops
-	refreshing, so its lock expires within LOCK_TTL_SECONDS instead of ~1 hour."""
+_REFRESH_LOCK_LUA = """
+if redis.call('get', KEYS[1]) == ARGV[1] then
+	redis.call('set', KEYS[1], ARGV[1], 'EX', ARGV[2])
+	return 1
+end
+return 0
+"""
+
+
+def _refresh_lock(provider: ProductImportProvider, token: str | None = None) -> bool:
+	"""Extend the lock lease, but only while this worker still owns it."""
 	if token is None:
-		return
-	owner = _lock_owner(provider)
-	# An expired key (owner None) is restored so a long queue wait or slow adapter call
-	# does not let a second run start; a key held by someone else is never touched.
-	if owner not in (token, None):
-		return
+		return True
 	key = frappe.cache.make_key(_lock_key(provider))
-	frappe.cache.set(  # nosemgrep: frappe-semgrep-rules.rules.frappe-cache-breaks-multitenancy
-		name=key, value=token, ex=LOCK_TTL_SECONDS
-	)
+	# Atomic compare-and-expire: an expired lock taken over by another worker is
+	# never recreated by the old owner (a plain get-then-set race could do that).
+	return bool(frappe.cache.eval(_REFRESH_LOCK_LUA, 1, key, token, int(LOCK_TTL_SECONDS)))
+
+
+def _require_lock(provider: ProductImportProvider, token: str | None) -> None:
+	"""Stop the run when another worker took over the lock."""
+	if not _refresh_lock(provider, token):
+		frappe.throw(_("Another sync took over {0}; stopping this run.").format(provider.label))
 
 
 def _release_lock(provider: ProductImportProvider, token: str | None = None) -> None:
@@ -160,7 +169,12 @@ def enqueue_sync_all(
 	return _enqueue_bulk(
 		provider,
 		log_message=_("Bulk product sync queued"),
-		request_data={"search": search, "sync_filter": sync_filter, "force_full": force_full},
+		request_data={
+			"integration": provider.integration,
+			"search": search,
+			"sync_filter": sync_filter,
+			"force_full": force_full,
+		},
 		search=search,
 		sync_filter=sync_filter,
 		force_full=force_full,
@@ -175,11 +189,27 @@ def enqueue_sync_selected(
 	return _enqueue_bulk(
 		provider,
 		log_message=_("Selected product sync queued"),
-		request_data={"product_ids": product_ids},
+		request_data={"integration": provider.integration, "product_ids": product_ids, "labels": labels},
 		product_ids=product_ids,
 		labels=labels,
 		user=frappe.session.user,
 	)
+
+
+def retry_bulk_sync_job(payload: dict | None = None, request_id: str | None = None) -> None:
+	"""Retry entry for the integration log, which calls methods with payload and request_id."""
+	if not isinstance(payload, dict) or not payload.get("integration"):
+		frappe.throw(_("This log has no retriable product-sync payload."))
+	provider = get_provider(payload["integration"])
+	if payload.get("product_ids"):
+		enqueue_sync_selected(provider, payload["product_ids"], labels=payload.get("labels"))
+	else:
+		enqueue_sync_all(
+			provider,
+			search=payload.get("search"),
+			sync_filter=payload.get("sync_filter"),
+			force_full=bool(payload.get("force_full")),
+		)
 
 
 def _enqueue_bulk(
@@ -205,7 +235,7 @@ def _enqueue_bulk(
 		log = create_integration_log(
 			provider.integration,
 			status="Queued",
-			method=f"{__name__}.run_bulk_sync_job",
+			method=f"{__name__}.retry_bulk_sync_job",
 			message=log_message,
 			request_data=request_data,
 		)
@@ -284,7 +314,7 @@ def run_bulk_sync_job(
 			cursor = None
 			incremental = provider.supports_incremental and not force_full
 			while True:
-				_refresh_lock(provider, lock_token)
+				_require_lock(provider, lock_token)
 				page = _fetch_products_page_with_retry(provider, cursor, search)
 				products = page.get("products") or []
 				products = _select_products(provider, products, sync_filter, incremental, counts)
@@ -355,7 +385,7 @@ def run_bulk_sync_job(
 	except Exception as exc:
 		create_integration_log(
 			provider.integration,
-			status="Failed",
+			status="Error",
 			message=str(exc),
 			exception=exc,
 		)
@@ -378,7 +408,7 @@ def _sync_single_product(
 ) -> None:
 	"""Sync one product inside a savepoint and log the outcome per product."""
 	savepoint = f"ecommerce_product_import_{next(_savepoint_counter)}"
-	_refresh_lock(provider, lock_token)
+	_require_lock(provider, lock_token)
 	try:
 		frappe.db.savepoint(savepoint)
 		result = provider.adapter.sync_product(product_id)

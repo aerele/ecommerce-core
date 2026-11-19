@@ -270,7 +270,7 @@ def _filtered_provider_page(
 
 def _encode_envelope(adapter_cursor: str | None, skip: int) -> str | None:
 	"""Wrap an adapter cursor plus rows-to-skip as an ``e:`` token; None ends pagination."""
-	if not adapter_cursor:
+	if not adapter_cursor and skip <= 0:
 		return None
 	payload = json.dumps({"c": adapter_cursor, "s": skip}, separators=(",", ":"))
 	return "e:" + base64.b64encode(payload.encode()).decode()

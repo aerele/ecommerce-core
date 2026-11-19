@@ -58,6 +58,25 @@ class TestDashboardAPI(IntegrationTestCase):
 		with self.assertRaises(frappe.exceptions.ValidationError):
 			api.get_section("no-such-section")
 
+	def test_broken_warehouse_config_is_reported_not_hidden(self):
+		from ecommerce_core.dashboard.registry import Provider, Registry
+
+		broken = Provider(
+			integration="brokenco",
+			label="BrokenCo",
+			settings_doctype="DocType That Does Not Exist",
+		)
+		registry = Registry(providers=[broken])
+
+		# Unreadable settings: no warehouses are trusted (empty list, not all warehouses).
+		self.assertEqual(api._warehouses(broken), [])
+		problems = api._warehouse_problems(registry, None)
+		self.assertTrue(any("BrokenCo" in problem for problem in problems))
+
+		# A provider without settings still means all warehouses on purpose.
+		plain = Provider(integration="plainco", label="PlainCo", settings_doctype=None)
+		self.assertIsNone(api._warehouses(plain))
+
 	def test_combined_view_keeps_only_filters_common_to_every_provider(self):
 		from ecommerce_core.dashboard.registry import Provider
 

@@ -129,6 +129,8 @@ const rows = ref([]);
 const rowsTotal = ref(null);
 const nextCursor = ref(null);
 const mergedErrors = ref([]);
+// Product ids are unique per provider, so state keys combine integration and id.
+const rowKey = (item) => `${item.integration || integration.value || ""}:${item.id}`;
 const selection = ref([]);
 
 const listLoading = ref(false);
@@ -412,7 +414,7 @@ async function syncSelected() {
 	const labels = {};
 	const idsByIntegration = {};
 	for (const row of rows.value) {
-		if (!selection.value.includes(row.id)) continue;
+		if (!selection.value.includes(rowKey(row))) continue;
 		labels[row.id] = row.name || row.id;
 		const target = row.integration || integration.value;
 		if (target) (idsByIntegration[target] ||= []).push(row.id);
@@ -450,7 +452,7 @@ const rowSyncing = ref(null);
 async function syncSingle(product) {
 	const target = product.integration || integration.value;
 	if (!target) return;
-	rowSyncing.value = product.id;
+	rowSyncing.value = rowKey(product);
 	try {
 		const result = await syncProductResource.submit({
 			integration: target,
@@ -507,7 +509,7 @@ const allSelected = computed(
 	() => rows.value.length > 0 && selection.value.length === Math.min(rows.value.length, 100),
 );
 function toggleAll(e) {
-	selection.value = e.target.checked ? rows.value.slice(0, 100).map((r) => r.id) : [];
+	selection.value = e.target.checked ? rows.value.slice(0, 100).map(rowKey) : [];
 	if (e.target.checked && rows.value.length > 100)
 		toast.warning("Selected the first 100 products (the maximum per sync).");
 }
@@ -635,7 +637,7 @@ const listColumns = computed(() => {
 							</div>
 							<div
 								v-for="(item, index) in rows"
-								:key="item.id"
+								:key="rowKey(item)"
 								class="grid h-12 items-center gap-x-3 border-b border-outline-gray-2 px-4 text-p-sm last:border-b-0 hover:bg-surface-gray-1"
 								:style="{ gridTemplateColumns: gridCols }"
 							>
@@ -643,7 +645,7 @@ const listColumns = computed(() => {
 									<input
 										type="checkbox"
 										class="size-3.5 cursor-pointer rounded-[4px]"
-										:value="item.id"
+										:value="rowKey(item)"
 										v-model="selection"
 									/>
 								</div>
@@ -671,7 +673,7 @@ const listColumns = computed(() => {
 								<ProductRowActions
 									:product="item"
 									:busy="busy"
-									:syncing="rowSyncing === item.id"
+									:syncing="rowSyncing === rowKey(item)"
 									@sync="syncSingle"
 								/>
 							</div>
