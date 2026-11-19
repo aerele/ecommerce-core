@@ -55,4 +55,6 @@ bench start &>> ~/frappe-bench/bench_start.log &
 CI=Yes bench build --app frappe &
 bench --site test_site reinstall --yes
 
+# ERPNext test fixtures reference the Payment Gateway DocType.
+bench --verbose --site test_site install-app payments
 bench --verbose --site test_site install-app ecommerce_core
