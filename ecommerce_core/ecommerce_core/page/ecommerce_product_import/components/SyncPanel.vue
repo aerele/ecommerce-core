@@ -1,0 +1,86 @@
+<script setup>
+import { computed } from "vue";
+import { Button, Badge } from "frappe-ui";
+import { doctypeRoute, formLink } from "../../../../ui/island/desk_links.js";
+
+const props = defineProps({
+	provider: { type: Object, required: true },
+	account: { type: Object, default: null },
+	stats: { type: Object, default: null },
+	busy: { type: Boolean, default: false },
+	syncingAll: { type: Boolean, default: false },
+});
+
+defineEmits(["sync-all"]);
+
+// Multi-account connectors keep one settings record per account, so the
+// selected account's record is opened; otherwise the settings doctype.
+const settingsRoute = computed(() => {
+	const doctype = props.provider?.settings_doctype;
+	if (!doctype) return null;
+	if (props.account?.name) return formLink(doctype, props.account.name);
+	return doctypeRoute(doctype);
+});
+
+function openSettings() {
+	if (settingsRoute.value) window.open(settingsRoute.value, "_blank", "noopener");
+}
+</script>
+
+<template>
+	<div class="rounded-6 border border-outline-gray-1 bg-surface-base p-4">
+		<div class="flex items-center justify-between">
+			<h3 class="text-sm font-medium text-ink-gray-8">Synchronization</h3>
+			<Badge
+				:label="provider?.enabled ? 'Enabled' : 'Disabled'"
+				:theme="provider?.enabled ? 'green' : 'gray'"
+				variant="subtle"
+				size="sm"
+			/>
+		</div>
+		<p v-if="account" class="mt-1 text-xs text-ink-gray-5">
+			Store: {{ account.label || account.name }}
+		</p>
+
+		<div class="mt-3 flex items-center gap-2">
+			<Button
+				variant="solid"
+				theme="gray"
+				label="Sync All Items"
+				icon-left="lucide-refresh-cw"
+				:loading="syncingAll"
+				:disabled="busy"
+				@click="$emit('sync-all')"
+			/>
+			<Button
+				v-if="settingsRoute"
+				variant="ghost"
+				size="sm"
+				label="Settings"
+				icon-left="lucide-settings"
+				@click="openSettings"
+			/>
+		</div>
+
+		<div v-if="stats" class="mt-4 grid grid-cols-3 gap-2">
+			<div class="rounded-4 bg-surface-gray-1 p-2.5">
+				<div class="text-lg font-semibold text-ink-gray-8">
+					{{ stats.provider_count ?? "—" }}
+				</div>
+				<div class="text-xs text-ink-gray-5">Products</div>
+			</div>
+			<div class="rounded-4 bg-surface-gray-1 p-2.5">
+				<div class="text-lg font-semibold text-ink-gray-8">
+					{{ stats.mapped ?? "—" }}
+				</div>
+				<div class="text-xs text-ink-gray-5">Mapped</div>
+			</div>
+			<div class="rounded-4 bg-surface-gray-1 p-2.5">
+				<div class="text-lg font-semibold text-ink-gray-8">
+					{{ stats.synced ?? "—" }}
+				</div>
+				<div class="text-xs text-ink-gray-5">Synced</div>
+			</div>
+		</div>
+	</div>
+</template>

@@ -78,6 +78,10 @@ def create_log(
 
 	frappe.db.commit()
 
+	from ecommerce_core.dashboard.queries import invalidate_dashboard_cache
+
+	invalidate_dashboard_cache()
+
 	return log
 
 
@@ -90,8 +94,8 @@ def _get_message(exception):
 		return _("Something went wrong while syncing")
 
 
-@frappe.whitelist()
-def resync(method, name, request_data):
+@frappe.whitelist(methods=["POST"])
+def resync(method: str | None = None, name: str = "", request_data: str | None = None):
 	_retry_job(name)
 
 
@@ -169,8 +173,8 @@ def _resolve_retry_method(method: str | None, installed_apps: set[str] | None = 
 	return method
 
 
-@frappe.whitelist()
-def bulk_retry(names):
+@frappe.whitelist(methods=["POST"])
+def bulk_retry(names: str | list):
 	if isinstance(names, str):
 		names = json.loads(names)
 	for name in names:

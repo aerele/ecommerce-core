@@ -16,23 +16,23 @@ def integration_log_wrapper(integration: str):
 	"""Return a provider-specific logging function bound to an integration."""
 
 	def log(**kwargs):
+		"""Write an integration log entry bound to the wrapped integration."""
 		return create_integration_log(integration, **kwargs)
 
 	return log
 
 
 def make_scheduler_error_logger(integration: str):
-	"""Return a decorator that logs unhandled scheduled job errors.
-
-	This preserves the existing provider behavior: exceptions are recorded and
-	not re-raised, so scheduler jobs do not fail noisily after logging.
-	"""
+	"""Return a decorator that logs unhandled scheduled job errors."""
 
 	log = integration_log_wrapper(integration)
 
 	def decorator(fn):
+		"""Wrap a scheduled job fn with the error-logging behavior."""
+
 		@functools.wraps(fn)
 		def wrapper(*args, **kwargs):
+			"""Run the job; on any exception log it (with rollback) and return None."""
 			try:
 				return fn(*args, **kwargs)
 			except Exception as e:

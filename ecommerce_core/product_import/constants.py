@@ -1,0 +1,37 @@
+# Copyright (c) 2026, Aerele Technologies and contributors
+# For license information, please see license.txt
+
+"""Constants for the shared Product Sync page."""
+
+HOOK_NAME = "ecommerce_product_import_providers"
+
+JOB_NAME_PREFIX = "ecommerce_core.product_import"
+EVENT_NAME_PREFIX = "ecommerce_core.product_import"
+
+DEFAULT_PAGE_SIZE = 20
+MAX_PAGE_SIZE = 2500
+# Adapter calls are chunked at this size (remote APIs cap their page window),
+# so the client can request page sizes up to MAX_PAGE_SIZE.
+BULK_PAGE_SIZE = 100
+BULK_SYNC_QUEUE = "long"
+BULK_SYNC_TIMEOUT = 3600
+MAX_SELECTED_SYNC = 100
+
+# Adapter pages scanned per request when a sync-status filter is active, to
+# bound request latency; pagination resumes the scan via envelope cursors.
+FILTER_SCAN_PAGE_LIMIT = 10
+
+# Remote product counts are cached so page loads do not hit the provider API.
+PROVIDER_COUNT_TTL_SECONDS = 600
+
+# Core-side filters applied on the enriched rows, not on the provider catalog.
+SYNC_FILTERS = ("synced", "unsynced")
+
+# Normalized outcomes an adapter's sync_product() may report.
+SYNC_ACTIONS = ("created", "updated", "skipped")
+
+# Minimum seconds between per-product realtime progress lines in a bulk run.
+PROGRESS_THROTTLE_SECONDS = 0.75
+
+# Failed product ids kept in the run summary (the log carries the full count).
+MAX_FAILED_IDS = 100
